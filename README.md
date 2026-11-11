@@ -31,9 +31,11 @@ POST /api/projects/:id/scans  (multipart, field "file")
   → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
   → queue             BullMQ job { scanId } on Redis; scan status = queued
   → worker            status = running → safe-extract → artifacts(kind = extracted)
-                      → profile → parse (common AST)
-                      → summary_json { filesExtracted, totalBytes, profile, filesParsed,
-                                       parseErrors, parseErrorSamples, detectors: [] } → completed
+                      → profile → parse (common AST) → detect → de-dup/correlate
+                      → findings rows + summary_json { profile, filesParsed, parseErrors,
+                          detectors, findingsTotal, findingsBySeverity,
+                          findingsByOwaspCategory, detectorErrors, … }   (one transaction)
+                      → completed
                       (any error → failed, summary_json.error, temp dir removed)
 ```
 
@@ -95,6 +97,52 @@ with no native/WASM bindings (unlike tree-sitter), and no TypeScript program to 
 ts-morph). Adding Python later means writing one adapter and registering it. Unparseable files
 never fail a scan: they get a non-fatal `parseError` and the scan moves on.
 
+## Detection engine
+
+**Detector interface** (`packages/analysis/src/detection`):
+
+```ts
+interface Detector {
+  id: string; // e.g. "A03-sql-injection"
+  title: string;
+  owaspCategory: OwaspCategory;
+  technique: 'pattern' | 'ast' | 'dataflow' | 'dependency' | 'config';
+  explanation: string; // default risk explanation
+  fixSuggestion: string; // default secure fix
+  run(ctx: DetectionContext): RawFinding[] | Promise<RawFinding[]>;
+}
+```
+
+`DetectionContext` exposes the `ProjectProfile`, every `ParsedFile` (with AST helpers and
+source/sink tags), all profiled `sourceFiles`, `manifests`, `configPaths`, sandboxed raw file
+access (`readText`), and `snippet(path, lineStart, lineEnd)`. A `RawFinding` carries
+`detectorId, owaspCategory, severity, confidence (0–1), filePath, lineStart, lineEnd, snippet,
+evidence` and may override the detector's explanation or fix.
+
+**Five technique stages.** `DetectionEngine` runs detectors stage by stage:
+`pattern → ast → dataflow → dependency → config`. Each detector runs in isolation. A detector
+that throws, rejects, or returns malformed findings (unknown file, bad line range, invalid
+severity) is logged and recorded in `summary_json.detectorErrors`, and the scan still completes.
+Confidence is clamped to 0–1, and each detector is capped at 5,000 findings.
+
+**Severity & confidence.** Severity reuses `Severity` from `packages/core`
+(`critical > high > medium > low > info`). Each finding keeps its detector's confidence.
+`filterByConfidence(findings, min)` and `confidenceBand()` (high ≥ 0.8, medium ≥ 0.5) support
+report and UI filtering.
+
+**De-duplication & correlation** (`dedupeFindings`):
+
+1. Findings with the same `(detectorId, filePath, lineStart)` collapse into one (strongest kept,
+   evidence merged).
+2. Findings from different detectors on the same file, line, **and OWASP category** merge into
+   one correlated finding. It keeps the highest severity, combines confidence with noisy-OR
+   (`1 − Π(1 − cᵢ)`, so agreement raises confidence), and lists every detector in
+   `contributingDetectors`. Different categories on the same line stay separate findings.
+
+**Self-registering registry.** A detector module calls `registerDetector({...})` and is
+imported once from `detectors/index.ts`. The engine never changes. `example-todo-comment`
+(pattern, `info`, confidence 1.0) flags `TODO SECURITY` comments and serves as a template.
+
 ## Authentication
 
 All auth endpoints live under `/api/auth` and accept/return JSON.
@@ -154,3 +202,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 3. Projects & scans data model + CRUD
 - [x] 4. ZIP upload, safe extraction & job queue
 - [x] 5. Project profiler + parser/AST layer
+- [x] 6. Detection engine core + detector registry

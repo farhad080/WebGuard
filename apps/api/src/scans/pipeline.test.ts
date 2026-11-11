@@ -3,7 +3,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Scan } from '@webguard/core';
+import { createDefaultDetectorRegistry, type Detector } from '@webguard/analysis';
+import type { OwaspCategory, Scan, ScanSummary, Severity } from '@webguard/core';
 import type { Worker } from 'bullmq';
 import request from 'supertest';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -163,7 +164,9 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
       skippedEntries: 0,
       filesParsed: 2, // src/app.js, src/lib/util.js
       parseErrors: 0,
-      detectors: [],
+      detectors: ['example-todo-comment'],
+      findingsTotal: 0,
+      detectorErrors: [],
     });
     expect(final.summary?.profile?.languages.map((l) => l.language)).toEqual([
       'javascript',
@@ -252,6 +255,146 @@ describe('processScan analysis inputs (profile + parse)', () => {
     ]);
   });
 });
+
+describe('processScan detection (detect → de-dup → persist → summary)', () => {
+  async function uploadMiniExpress(): Promise<string> {
+    const zip = await miniExpressZip();
+    const res = await upload(alice, (req) =>
+      req.attach('file', zip, { filename: 'mini-express.zip', contentType: 'application/zip' }),
+    );
+    expect(res.status).toBe(201);
+    return res.body.id;
+  }
+
+  it('persists the example finding and serves it from GET /api/scans/:id/findings', async () => {
+    const scanId = await uploadMiniExpress();
+    await processScan(scanId);
+
+    const res = await request(app).get(`/api/scans/${scanId}/findings`).set('Authorization', alice);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      {
+        id: expect.any(String),
+        scanId,
+        detectorId: 'example-todo-comment',
+        owaspCategory: 'A04:2021-Insecure Design',
+        severity: 'info',
+        confidence: 1,
+        filePath: 'src/server.ts',
+        lineStart: 10,
+        lineEnd: 10,
+        snippet: '// TODO SECURITY: add rate limiting to /users before launch',
+        explanation: expect.stringContaining('TODO SECURITY'),
+        fixSuggestion: expect.any(String),
+        contributingDetectors: ['example-todo-comment'],
+        evidence: [expect.stringContaining('TODO SECURITY')],
+        createdAt: expect.any(String),
+      },
+    ]);
+
+    // Filters still work on real rows.
+    const filtered = await request(app)
+      .get(`/api/scans/${scanId}/findings`)
+      .query({ severity: 'critical' })
+      .set('Authorization', alice);
+    expect(filtered.body).toEqual([]);
+  });
+
+  it('summary counts match the persisted findings', async () => {
+    const scanId = await uploadMiniExpress();
+    // Add two more detectors so there are several severities and categories to count.
+    const registry = createDefaultDetectorRegistry();
+    registry.register(fakeDetector('fake-sqli', 'A03:2021-Injection', 'high', [8, 13]));
+    registry.register(fakeDetector('fake-sqli-2', 'A03:2021-Injection', 'critical', [8]));
+    registry.register(
+      fakeDetector('fake-secret', 'A02:2021-Cryptographic Failures', 'medium', [8]),
+    );
+    await processScan(scanId, { detectors: registry });
+
+    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
+    const summary = scan.summaryJson as ScanSummary;
+    const rows = await prisma.finding.findMany({ where: { scanId } });
+
+    // users.js:8 → fake-sqli + fake-sqli-2 correlate (same line, same category);
+    // fake-secret stays separate (different category). Plus line 13 and the TODO.
+    expect(rows).toHaveLength(4);
+    const correlated = rows.find(
+      (r) => r.lineStart === 8 && r.owaspCategory === 'A03:2021-Injection',
+    );
+    expect(correlated).toMatchObject({
+      detectorId: 'fake-sqli-2',
+      severity: 'critical',
+      contributingDetectors: ['fake-sqli-2', 'fake-sqli'],
+    });
+
+    const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    const byCategory: Record<string, number> = {};
+    for (const r of rows) {
+      bySeverity[r.severity]++;
+      byCategory[r.owaspCategory] = (byCategory[r.owaspCategory] ?? 0) + 1;
+    }
+    expect(summary.findingsTotal).toBe(rows.length);
+    expect(summary.findingsBySeverity).toEqual(bySeverity);
+    expect(summary.findingsByOwaspCategory).toEqual(byCategory);
+    expect(summary.findingsBySeverity).toEqual({
+      critical: 1,
+      high: 1,
+      medium: 1,
+      low: 0,
+      info: 1,
+    });
+  });
+
+  it('records a throwing detector as a detectorError and still completes the scan', async () => {
+    const scanId = await uploadMiniExpress();
+    const registry = createDefaultDetectorRegistry();
+    registry.register({
+      ...fakeDetector('broken-detector', 'A03:2021-Injection', 'high', []),
+      run: () => {
+        throw new Error('detector bug');
+      },
+    });
+    await processScan(scanId, { detectors: registry });
+
+    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
+    const summary = scan.summaryJson as ScanSummary;
+    expect(scan.status).toBe('completed');
+    expect(summary.detectorErrors).toEqual([
+      { detectorId: 'broken-detector', message: 'threw: detector bug' },
+    ]);
+    expect(summary.detectors).toEqual(['example-todo-comment', 'broken-detector']);
+    // The healthy detector's finding is still persisted.
+    expect(await prisma.finding.count({ where: { scanId } })).toBe(1);
+  });
+});
+
+function fakeDetector(
+  id: string,
+  owaspCategory: OwaspCategory,
+  severity: Severity,
+  lines: number[],
+): Detector {
+  return {
+    id,
+    title: id,
+    owaspCategory,
+    technique: 'ast',
+    explanation: `${id} explanation`,
+    fixSuggestion: `${id} fix`,
+    run: (ctx) =>
+      lines.map((line) => ({
+        detectorId: id,
+        owaspCategory,
+        severity,
+        confidence: 0.7,
+        filePath: 'src/routes/users.js',
+        lineStart: line,
+        lineEnd: line,
+        snippet: ctx.snippet('src/routes/users.js', line),
+        evidence: `${id} hit`,
+      })),
+  };
+}
 
 describe('processScan limits', () => {
   async function queuedScanWith(zip: Buffer): Promise<string> {

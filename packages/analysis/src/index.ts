@@ -44,3 +44,41 @@ export {
 } from './parsers/registry.js';
 export { BabelJsTsAdapter } from './parsers/babel-adapter.js';
 export { createDefaultParserRegistry, parseSourceFiles } from './parse-project.js';
+
+// Detection engine
+export {
+  TECHNIQUE_STAGES,
+  type Technique,
+  type Detector,
+  type DetectionContext,
+  type RawFinding,
+  type ValidatedFinding,
+  type FindingDraft,
+  type DetectorError,
+} from './detection/types.js';
+export { createDetectionContext, type DetectionContextInput } from './detection/context.js';
+export { DetectorRegistry, builtinDetectors, registerDetector } from './detection/registry.js';
+export {
+  DetectionEngine,
+  type EngineOptions,
+  type EngineResult,
+  type EngineLogger,
+} from './detection/engine.js';
+export { dedupeFindings } from './detection/dedupe.js';
+export {
+  SEVERITIES,
+  isSeverity,
+  severityRank,
+  compareSeverity,
+  maxSeverity,
+  confidenceBand,
+  clampConfidence,
+  combineConfidence,
+  filterByConfidence,
+  countFindings,
+  type ConfidenceBand,
+  type FindingCounts,
+} from './detection/scoring.js';
+export { getSnippet, type SnippetOptions } from './detection/snippet.js';
+export { createDefaultDetectorRegistry } from './detection/detectors/index.js';
+export { exampleTodoComment } from './detection/detectors/example-todo-comment.js';

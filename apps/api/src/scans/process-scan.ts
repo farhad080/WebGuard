@@ -2,7 +2,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Prisma } from '@prisma/client';
-import { parseSourceFiles, ProfilerService } from '@webguard/analysis';
+import {
+  countFindings,
+  createDefaultDetectorRegistry,
+  createDetectionContext,
+  dedupeFindings,
+  DetectionEngine,
+  parseSourceFiles,
+  ProfilerService,
+  type DetectorRegistry,
+  type ParsedFile,
+} from '@webguard/analysis';
 import type { ParseErrorSample, ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
 import { prisma } from '../db.js';
@@ -12,13 +22,16 @@ import { getStorage, storageKeys, uploadDirectory, type StorageService } from '.
 export interface ProcessScanOptions {
   storage?: StorageService;
   limits?: Partial<ExtractionLimits>;
+  /** Detectors to run (default: every built-in detector). */
+  detectors?: DetectorRegistry;
 }
 
 const MAX_PARSE_ERROR_SAMPLES = 20;
+const FINDINGS_BATCH_SIZE = 1000;
 
 /**
  * Drives one scan through queued → running → completed | failed:
- * download → safe-extract → profile → parse. Detection is not wired in yet.
+ * download → safe-extract → profile → parse → detect → de-dup → persist findings + summary.
  */
 export async function processScan(scanId: string, options: ProcessScanOptions = {}): Promise<void> {
   const storage = options.storage ?? getStorage();
@@ -53,12 +66,11 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
     const profile = await new ProfilerService({
       maxFileBytes: config.analysisMaxFileBytes,
     }).profile(extractDir);
-    let filesParsed = 0;
+    const files: ParsedFile[] = [];
     let parseErrors = 0;
     const parseErrorSamples: ParseErrorSample[] = [];
     for await (const file of parseSourceFiles(extractDir, profile)) {
-      // Detectors will consume `file` here (next step). For now we only count.
-      if (file.ast) filesParsed++;
+      files.push(file);
       if (file.parseError) {
         parseErrors++;
         if (parseErrorSamples.length < MAX_PARSE_ERROR_SAMPLES) {
@@ -68,24 +80,53 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       }
     }
 
+    // Detection: run every registered detector stage by stage, then de-duplicate/correlate.
+    // A failing detector is recorded in detectorErrors; it never fails the scan.
+    const ctx = createDetectionContext({ rootDir: extractDir, profile, files });
+    const engine = new DetectionEngine(options.detectors ?? createDefaultDetectorRegistry());
+    const detection = await engine.run(ctx);
+    const findings = dedupeFindings(detection.findings);
+    const counts = countFindings(findings);
+
     const summary: ScanSummary = {
       filesExtracted: result.filesExtracted,
       totalBytes: result.totalBytes,
       skippedEntries: result.skippedEntries,
       profile,
-      filesParsed,
+      filesParsed: files.filter((f) => f.ast).length,
       parseErrors,
       parseErrorSamples,
-      detectors: [],
+      detectors: detection.executed,
+      findingsTotal: counts.total,
+      findingsBySeverity: counts.bySeverity,
+      findingsByOwaspCategory: counts.byOwaspCategory,
+      detectorErrors: detection.detectorErrors.map(({ detectorId, message }) => ({
+        detectorId,
+        message,
+      })),
     };
-    await prisma.scan.updateMany({
-      where: { id: scanId },
-      data: {
-        status: 'completed',
-        finishedAt: new Date(),
-        summaryJson: summary as unknown as Prisma.InputJsonObject,
+
+    // Findings and the completed status land atomically, so the summary counts always match
+    // the persisted rows (and a retried scan can't leave duplicates behind).
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.finding.deleteMany({ where: { scanId } });
+        for (let i = 0; i < findings.length; i += FINDINGS_BATCH_SIZE) {
+          await tx.finding.createMany({
+            data: findings.slice(i, i + FINDINGS_BATCH_SIZE).map((f) => ({ scanId, ...f })),
+          });
+        }
+        await tx.scan.updateMany({
+          where: { id: scanId },
+          data: {
+            status: 'completed',
+            finishedAt: new Date(),
+            summaryJson: summary as unknown as Prisma.InputJsonObject,
+          },
+        });
       },
-    });
+      { timeout: 60_000 },
+    );
   } catch (err) {
     // Archive problems are reported verbatim; anything else gets a generic message so
     // internal details (paths, stack traces) never reach the client.

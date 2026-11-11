@@ -113,6 +113,11 @@ export interface ProjectProfile {
   totals: { files: number; bytes: number };
 }
 
+export interface DetectorErrorInfo {
+  detectorId: string;
+  message: string;
+}
+
 export interface ParseErrorSample {
   path: string;
   message: string;
@@ -133,7 +138,14 @@ export interface ScanSummary {
   parseErrors?: number;
   /** First few parse errors, for display. */
   parseErrorSamples?: ParseErrorSample[];
+  /** Ids of the detectors that ran, in execution order. */
   detectors?: string[];
+  /** Counts of the persisted (de-duplicated) findings. */
+  findingsTotal?: number;
+  findingsBySeverity?: Record<Severity, number>;
+  findingsByOwaspCategory?: Partial<Record<OwaspCategory, number>>;
+  /** Detectors that threw or returned invalid findings. Non-fatal. */
+  detectorErrors?: DetectorErrorInfo[];
   /** Present when status is `failed`. */
   error?: string;
 }
@@ -162,6 +174,13 @@ export interface Finding {
   snippet: string;
   explanation: string;
   fixSuggestion: string;
+  /**
+   * Every detector that reported this issue. When more than one detector flagged the same
+   * line and category, the findings are correlated into one; `detectorId` is the primary.
+   */
+  contributingDetectors: string[];
+  /** Short, human-readable reasons from each contributing detector. */
+  evidence: string[];
   createdAt: IsoDateString;
 }
 

@@ -66,21 +66,25 @@ enum Severity {
 }
 
 model Finding {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  scanId        String   @map("scan_id") @db.Uuid
-  detectorId    String   @map("detector_id")
-  owaspCategory String   @map("owasp_category")
-  severity      Severity
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scanId                String   @map("scan_id") @db.Uuid
+  detectorId            String   @map("detector_id")
+  owaspCategory         String   @map("owasp_category")
+  severity              Severity
   /// 0–1, enforced by a CHECK constraint in the migration.
-  confidence    Float    @db.Real
-  filePath      String   @map("file_path")
-  lineStart     Int      @map("line_start")
-  lineEnd       Int      @map("line_end")
-  snippet       String
-  explanation   String
-  fixSuggestion String   @map("fix_suggestion")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  scan          Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  confidence            Float    @db.Real
+  filePath              String   @map("file_path")
+  lineStart             Int      @map("line_start")
+  lineEnd               Int      @map("line_end")
+  snippet               String
+  explanation           String
+  fixSuggestion         String   @map("fix_suggestion")
+  /// All detectors that reported this issue (correlated findings have more than one).
+  contributingDetectors String[] @default([]) @map("contributing_detectors")
+  /// Short reasons from each contributing detector.
+  evidence              String[] @default([])
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  scan                  Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
 
   // Leading scan_id column also serves as the foreign-key index.
   @@index([scanId, severity])

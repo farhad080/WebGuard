@@ -44,6 +44,9 @@ export function toFinding(row: FindingRow): Finding {
     snippet: row.snippet,
     explanation: row.explanation,
     fixSuggestion: row.fixSuggestion,
+    contributingDetectors:
+      row.contributingDetectors.length > 0 ? row.contributingDetectors : [row.detectorId],
+    evidence: row.evidence,
     createdAt: row.createdAt.toISOString(),
   };
 }
