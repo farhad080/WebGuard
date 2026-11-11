@@ -1,7 +1,9 @@
 import { createApp } from './app.js';
+import { config } from './config.js';
 
-const port = Number(process.env.PORT ?? 3000);
+// Fail fast on missing secrets.
+void config.jwtSecret;
 
-createApp().listen(port, () => {
-  console.log(`WebGuard API listening on http://localhost:${port}`);
+createApp().listen(config.port, () => {
+  console.log(`WebGuard API listening on http://localhost:${config.port}`);
 });

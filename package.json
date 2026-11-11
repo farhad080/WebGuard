@@ -15,7 +15,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev --workspace apps/api"
+    "dev": "npm run dev --workspace apps/api",
+    "db:migrate": "npm run db:migrate --workspace apps/api"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
