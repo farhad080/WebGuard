@@ -82,3 +82,24 @@ export {
 export { getSnippet, type SnippetOptions } from './detection/snippet.js';
 export { createDefaultDetectorRegistry } from './detection/detectors/index.js';
 export { exampleTodoComment } from './detection/detectors/example-todo-comment.js';
+export { sqlInjection } from './detection/detectors/a1-sql-injection.js';
+export { nosqlInjection } from './detection/detectors/a2-nosql-injection.js';
+export { ssti } from './detection/detectors/a3-ssti.js';
+
+// Taint tracing
+export {
+  traceTaint,
+  resolveIdentifier,
+  resolveValues,
+  scopeChain,
+  parameterNames,
+  stringParts,
+  interpolatedParts,
+  isStringBuilding,
+  isHttpSource,
+  sourcesWithin,
+  type TaintOptions,
+  type TaintTrace,
+  type TaintFlow,
+  type Resolution,
+} from './ast/taint.js';

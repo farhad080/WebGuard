@@ -36,7 +36,12 @@ export interface SourceLocation {
 
 /** Well-known tags. Detectors may add their own (`source:*`, `sink:*`). */
 export type NodeTag =
-  'source:http-input' | 'sink:dom-html' | 'sink:code-exec' | 'sink:command-exec' | (string & {});
+  | 'source:http-input'
+  | 'source:user-profile'
+  | 'sink:dom-html'
+  | 'sink:code-exec'
+  | 'sink:command-exec'
+  | (string & {});
 
 export interface AstNode {
   /** Normalized, language-independent type. */

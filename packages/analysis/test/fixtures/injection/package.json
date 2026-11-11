@@ -1,0 +1,5 @@
+{
+  "name": "injection-fixtures",
+  "private": true,
+  "dependencies": { "express": "^4.21.2", "sequelize": "^6.37.0", "pug": "^3.0.3" }
+}

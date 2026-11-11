@@ -12,6 +12,9 @@ export interface TagRule {
 const HTTP_INPUT =
   /^(req|request|ctx\.request|ctx)\.(body|query|params|headers|cookies|signedCookies|files?|rawBody|url|originalUrl|path|hostname|ip)(\.|$)/;
 
+const USER_PROFILE =
+  /(^|\.)(user|users|currentUser|loggedInUser|authUser|profile|account|member|customer)\.(username|userName|name|displayName|fullName|firstName|lastName|email|bio|about|description|nickname|title|address)$/;
+
 /**
  * Default source/sink tags.
  * Sources: reads of user-controlled request data (`req.body.x`, `req.query`, `req.headers[..]`).
@@ -26,6 +29,13 @@ export const DEFAULT_TAG_RULES: readonly TagRule[] = [
     tag: 'source:http-input',
     description: 'Reads HTTP request input (body, query, params, headers, cookies, ...)',
     match: (n) => n.type === 'MemberAccess' && !!n.name && HTTP_INPUT.test(n.name),
+  },
+  {
+    // Second-order input: profile fields a user chose earlier (username, bio, ...), read back
+    // from a user object. Detectors opt in to this tag where it matters (e.g. SSTI/eval).
+    tag: 'source:user-profile',
+    description: 'Reads a user-controlled profile field (username, email, bio, ...)',
+    match: (n) => n.type === 'MemberAccess' && !!n.name && USER_PROFILE.test(n.name),
   },
   {
     tag: 'sink:dom-html',

@@ -151,7 +151,7 @@ function findingData(
   return {
     scanId,
     detectorId: 'test-detector',
-    owaspCategory: 'A03:2021-Injection',
+    owaspCategory: 'A05:2025-Injection',
     severity: 'high' as const,
     confidence: 0.9,
     filePath: 'src/index.js',
@@ -174,7 +174,7 @@ describe('GET /api/scans/:id/findings', () => {
         findingData(scan.id, { severity: 'high', confidence: 0.4 }),
         findingData(scan.id, {
           severity: 'low',
-          owaspCategory: 'A05:2021-Security Misconfiguration',
+          owaspCategory: 'A02:2025-Security Misconfiguration',
           confidence: 0.7,
         }),
       ],
@@ -208,7 +208,7 @@ describe('GET /api/scans/:id/findings', () => {
 
   it('filters by owaspCategory', async () => {
     const scan = await seedFindings();
-    const res = await getFindings(scan.id, { owaspCategory: 'A05:2021-Security Misconfiguration' });
+    const res = await getFindings(scan.id, { owaspCategory: 'A02:2025-Security Misconfiguration' });
     expect(res.body.map((f: Finding) => f.severity)).toEqual(['low']);
   });
 

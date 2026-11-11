@@ -143,6 +143,48 @@ report and UI filtering.
 imported once from `detectors/index.ts`. The engine never changes. `example-todo-comment`
 (pattern, `info`, confidence 1.0) flags `TODO SECURITY` comments and serves as a template.
 
+## Detectors
+
+Categories follow the **OWASP Top 10:2025**. Confidence bands: high ≥ 0.8, medium ≥ 0.5.
+
+| ID                   | Detects                             | OWASP                | Technique | Juice Shop challenges |
+| -------------------- | ----------------------------------- | -------------------- | --------- | --------------------- |
+| `A1-sql-injection`   | SQL injection                       | A05:2025 – Injection | dataflow  | #1–#7                 |
+| `A2-nosql-injection` | NoSQL operator / `$where` injection | A05:2025 – Injection | dataflow  | #8–#10                |
+| `A3-ssti`            | SSTI / dynamic code evaluation      | A05:2025 – Injection | dataflow  | #11                   |
+
+**A1 — SQL injection.** Sinks: `sequelize.query`, `knex.raw`, Prisma `$queryRawUnsafe` /
+`$executeRawUnsafe`, `db.run/all/get/each/exec`, and `*.query` / `*.execute` when the text looks
+like SQL. Flags query strings built with `+` or `${}` whose parts taint-trace to
+`req.body/query/params/headers/…`. **Critical, 0.9** when request input reaches the query;
+**0.6** through an unknown function call; **high, 0.5** when the string is dynamic but no source
+can be proven in-file. Not flagged: parameterized queries (`$1` / `?` / `:name` with `bind` or
+`replacements`), constant/enum/`process.env`-only strings, `Number()`/`escape()`d values, and
+ORM/query-builder calls.
+
+**A2 — NoSQL injection.** Sinks: `find*`, `update*`, `remove`, `delete*`, `count*`,
+`replaceOne` on collections/models, `$where`, and `mapReduce`. Flags a request object used as the
+whole selector (`update(req.body, …)`) and selector fields taken from the body/query without
+scalar coercion (`{ _id: req.body.id }`, which accepts `{"$ne": -1}`): **high, 0.6 (medium)**,
+because exploitability depends on body parsing and field types. `$where` / `mapReduce` with
+tainted strings: **critical, 0.8**. Not flagged: `String()`/`Number()`/template-coerced values,
+`req.params` equality (always strings), `Array#find(fn)`.
+
+**A3 — SSTI / code evaluation.** Sinks: `eval`, `Function`, string `setTimeout`/`setInterval`,
+`vm.runIn*` / `vm.Script`, and template engines compiling a template **string**
+(`pug.compile`, `ejs.render`, `handlebars.compile`, `_.template`, `nunjucks.renderString`, …).
+Sources: request input and user profile fields read back from a user object (`user.username`,
+second-order input). **Critical**: 0.95 for request input, 0.85 for a profile field, 0.6 through
+a call. `eval` over an untraceable dynamic value: high, 0.4 (low). Not flagged: constant
+`eval('2+2')`, `vm` sandboxes and file-based templates without user input, `setTimeout(fn)`.
+
+**Taint tracing** (`traceTaint` in `packages/analysis`) is intra-procedural. It follows
+variables through assignments, reassignments, destructuring, `for…of`, and closures, plus
+string building (`+`, templates, `?:`, `||`/`??`, string methods). Numeric casts, comparisons,
+and `.length` stop taint. Detectors can add sanitizers or treat scalar coercion as safe. Not
+followed: calls into other functions or files, object mutation and aliasing, and per-branch
+control flow.
+
 ## Authentication
 
 All auth endpoints live under `/api/auth` and accept/return JSON.
@@ -203,3 +245,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 4. ZIP upload, safe extraction & job queue
 - [x] 5. Project profiler + parser/AST layer
 - [x] 6. Detection engine core + detector registry
+- [x] 7. Injection detectors (SQLi, NoSQLi, SSTI)

@@ -43,7 +43,7 @@ function detector(
   id: string,
   technique: Technique,
   run: Detector['run'],
-  owaspCategory: OwaspCategory = 'A03:2021-Injection',
+  owaspCategory: OwaspCategory = 'A05:2025-Injection',
 ): Detector {
   return {
     id,
@@ -59,7 +59,7 @@ function detector(
 function finding(overrides: Partial<ValidatedFinding> = {}): ValidatedFinding {
   return {
     detectorId: 'a',
-    owaspCategory: 'A03:2021-Injection',
+    owaspCategory: 'A05:2025-Injection',
     severity: 'high',
     confidence: 0.6,
     filePath: 'src/routes/users.js',
@@ -98,7 +98,7 @@ describe('DetectionEngine', () => {
     const good = detector('good', 'config', (c) => [
       {
         detectorId: 'good',
-        owaspCategory: 'A03:2021-Injection',
+        owaspCategory: 'A05:2025-Injection',
         severity: 'low',
         confidence: 0.9,
         filePath: 'src/routes/users.js',
@@ -144,7 +144,7 @@ describe('DetectionEngine', () => {
         // valid, but with sloppy fields
         {
           detectorId: 'someone-else',
-          owaspCategory: 'A03:2021-Injection',
+          owaspCategory: 'A05:2025-Injection',
           severity: 'medium',
           confidence: 7,
           filePath: 'src/routes/users.js',
@@ -179,7 +179,7 @@ describe('DetectionEngine', () => {
     function base() {
       return {
         detectorId: 'sloppy',
-        owaspCategory: 'A03:2021-Injection' as const,
+        owaspCategory: 'A05:2025-Injection' as const,
         severity: 'low' as const,
         confidence: 0.5,
         filePath: 'src/routes/users.js',
@@ -194,15 +194,16 @@ describe('DetectionEngine', () => {
 
 describe('example-todo-comment detector', () => {
   it('flags a TODO SECURITY comment with the exact file, line, and snippet', async () => {
-    const result = await new DetectionEngine(createDefaultDetectorRegistry(), {
-      logger: silent,
-    }).run(ctx);
+    const onlyExample = new DetectorRegistry([
+      createDefaultDetectorRegistry().get('example-todo-comment')!,
+    ]);
+    const result = await new DetectionEngine(onlyExample, { logger: silent }).run(ctx);
     const findings = dedupeFindings(result.findings);
     expect(result.detectorErrors).toEqual([]);
     expect(findings).toEqual([
       {
         detectorId: 'example-todo-comment',
-        owaspCategory: 'A04:2021-Insecure Design',
+        owaspCategory: 'A06:2025-Insecure Design',
         severity: 'info',
         confidence: 1,
         filePath: 'src/server.ts',
@@ -287,7 +288,7 @@ describe('dedupeFindings', () => {
   it('keeps different OWASP categories and different lines separate', () => {
     const out = dedupeFindings([
       finding({ detectorId: 'sqli' }),
-      finding({ detectorId: 'secret', owaspCategory: 'A02:2021-Cryptographic Failures' }),
+      finding({ detectorId: 'secret', owaspCategory: 'A04:2025-Cryptographic Failures' }),
       finding({ detectorId: 'sqli', lineStart: 13, lineEnd: 13 }),
     ]);
     expect(out).toHaveLength(3);
@@ -323,14 +324,14 @@ describe('scoring helpers', () => {
   it('counts findings by severity and OWASP category', () => {
     expect(
       countFindings([
-        { severity: 'high', owaspCategory: 'A03:2021-Injection' },
-        { severity: 'high', owaspCategory: 'A03:2021-Injection' },
-        { severity: 'info', owaspCategory: 'A04:2021-Insecure Design' },
+        { severity: 'high', owaspCategory: 'A05:2025-Injection' },
+        { severity: 'high', owaspCategory: 'A05:2025-Injection' },
+        { severity: 'info', owaspCategory: 'A06:2025-Insecure Design' },
       ]),
     ).toEqual({
       total: 3,
       bySeverity: { critical: 0, high: 2, medium: 0, low: 0, info: 1 },
-      byOwaspCategory: { 'A03:2021-Injection': 2, 'A04:2021-Insecure Design': 1 },
+      byOwaspCategory: { 'A05:2025-Injection': 2, 'A06:2025-Insecure Design': 1 },
     });
   });
 });

@@ -3,7 +3,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDefaultDetectorRegistry, type Detector } from '@webguard/analysis';
+import {
+  createDefaultDetectorRegistry,
+  DetectorRegistry,
+  exampleTodoComment,
+  type Detector,
+} from '@webguard/analysis';
 import type { OwaspCategory, Scan, ScanSummary, Severity } from '@webguard/core';
 import type { Worker } from 'bullmq';
 import request from 'supertest';
@@ -164,7 +169,7 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
       skippedEntries: 0,
       filesParsed: 2, // src/app.js, src/lib/util.js
       parseErrors: 0,
-      detectors: ['example-todo-comment'],
+      detectors: ['example-todo-comment', 'A1-sql-injection', 'A2-nosql-injection', 'A3-ssti'],
       findingsTotal: 0,
       detectorErrors: [],
     });
@@ -266,18 +271,26 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     return res.body.id;
   }
 
-  it('persists the example finding and serves it from GET /api/scans/:id/findings', async () => {
+  it('persists findings and serves them from GET /api/scans/:id/findings', async () => {
     const scanId = await uploadMiniExpress();
     await processScan(scanId);
 
     const res = await request(app).get(`/api/scans/${scanId}/findings`).set('Authorization', alice);
     expect(res.status).toBe(200);
+    // Ordered by file, then line. users.js:8 is a real SQL injection (A1); line 13 is
+    // parameterized and correctly not reported.
     expect(res.body).toEqual([
+      expect.objectContaining({
+        detectorId: 'A1-sql-injection',
+        severity: 'critical',
+        filePath: 'src/routes/users.js',
+        lineStart: 8,
+      }),
       {
         id: expect.any(String),
         scanId,
         detectorId: 'example-todo-comment',
-        owaspCategory: 'A04:2021-Insecure Design',
+        owaspCategory: 'A06:2025-Insecure Design',
         severity: 'info',
         confidence: 1,
         filePath: 'src/server.ts',
@@ -295,19 +308,21 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     // Filters still work on real rows.
     const filtered = await request(app)
       .get(`/api/scans/${scanId}/findings`)
-      .query({ severity: 'critical' })
+      .query({ severity: 'info' })
       .set('Authorization', alice);
-    expect(filtered.body).toEqual([]);
+    expect(filtered.body.map((f: { detectorId: string }) => f.detectorId)).toEqual([
+      'example-todo-comment',
+    ]);
   });
 
   it('summary counts match the persisted findings', async () => {
     const scanId = await uploadMiniExpress();
-    // Add two more detectors so there are several severities and categories to count.
-    const registry = createDefaultDetectorRegistry();
-    registry.register(fakeDetector('fake-sqli', 'A03:2021-Injection', 'high', [8, 13]));
-    registry.register(fakeDetector('fake-sqli-2', 'A03:2021-Injection', 'critical', [8]));
+    // Only the example detector plus fakes, so the correlation outcome is fully controlled.
+    const registry = new DetectorRegistry([exampleTodoComment]);
+    registry.register(fakeDetector('fake-sqli', 'A05:2025-Injection', 'high', [8, 13]));
+    registry.register(fakeDetector('fake-sqli-2', 'A05:2025-Injection', 'critical', [8]));
     registry.register(
-      fakeDetector('fake-secret', 'A02:2021-Cryptographic Failures', 'medium', [8]),
+      fakeDetector('fake-secret', 'A04:2025-Cryptographic Failures', 'medium', [8]),
     );
     await processScan(scanId, { detectors: registry });
 
@@ -319,7 +334,7 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     // fake-secret stays separate (different category). Plus line 13 and the TODO.
     expect(rows).toHaveLength(4);
     const correlated = rows.find(
-      (r) => r.lineStart === 8 && r.owaspCategory === 'A03:2021-Injection',
+      (r) => r.lineStart === 8 && r.owaspCategory === 'A05:2025-Injection',
     );
     expect(correlated).toMatchObject({
       detectorId: 'fake-sqli-2',
@@ -349,7 +364,7 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     const scanId = await uploadMiniExpress();
     const registry = createDefaultDetectorRegistry();
     registry.register({
-      ...fakeDetector('broken-detector', 'A03:2021-Injection', 'high', []),
+      ...fakeDetector('broken-detector', 'A05:2025-Injection', 'high', []),
       run: () => {
         throw new Error('detector bug');
       },
@@ -362,9 +377,85 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     expect(summary.detectorErrors).toEqual([
       { detectorId: 'broken-detector', message: 'threw: detector bug' },
     ]);
-    expect(summary.detectors).toEqual(['example-todo-comment', 'broken-detector']);
-    // The healthy detector's finding is still persisted.
-    expect(await prisma.finding.count({ where: { scanId } })).toBe(1);
+    // Stage order: pattern, then ast (the broken one), then the dataflow detectors.
+    expect(summary.detectors).toEqual([
+      'example-todo-comment',
+      'broken-detector',
+      'A1-sql-injection',
+      'A2-nosql-injection',
+      'A3-ssti',
+    ]);
+    // The healthy detectors' findings are still persisted (TODO + SQLi in users.js).
+    expect(await prisma.finding.count({ where: { scanId } })).toBe(2);
+  });
+});
+
+describe('injection detectors through the full pipeline', () => {
+  it('persists correctly categorized and scored SQLi / NoSQLi / SSTI findings', async () => {
+    const root = fileURLToPath(
+      new URL('../../../../packages/analysis/test/fixtures/injection', import.meta.url),
+    );
+    const files = (await readdir(root, { recursive: true, withFileTypes: true }))
+      .filter((e) => e.isFile())
+      .map((e) => path.join(e.parentPath, e.name));
+    const zip = buildZip(
+      await Promise.all(
+        files.map(async (abs) => ({
+          name: path.relative(root, abs).split(path.sep).join('/'),
+          data: await readFile(abs),
+        })),
+      ),
+    );
+    const res = await upload(alice, (req) =>
+      req.attach('file', zip, { filename: 'injection.zip', contentType: 'application/zip' }),
+    );
+    expect(res.status).toBe(201);
+    await processScan(res.body.id);
+
+    const all = await request(app)
+      .get(`/api/scans/${res.body.id}/findings`)
+      .set('Authorization', alice);
+    expect(
+      all.body.map(
+        (f: {
+          detectorId: string;
+          severity: string;
+          confidence: number;
+          filePath: string;
+          lineStart: number;
+        }) => `${f.detectorId} ${f.severity} ${f.confidence} ${f.filePath}:${f.lineStart}`,
+      ),
+    ).toEqual([
+      'A2-nosql-injection critical 0.8 routes/nosql/showProductReviews.ts:8',
+      'A2-nosql-injection high 0.6 routes/nosql/updateProductReviews.ts:7',
+      'A2-nosql-injection high 0.6 routes/nosql/whole-body.js:6',
+      'A1-sql-injection critical 0.9 routes/sqli/login.ts:9',
+      'A1-sql-injection critical 0.9 routes/sqli/raw-concat.js:8',
+      'A1-sql-injection critical 0.9 routes/sqli/search.ts:9',
+      'A1-sql-injection high 0.5 routes/sqli/unproven.js:5',
+      'A3-ssti critical 0.85 routes/ssti/greeting.js:3',
+      'A3-ssti critical 0.85 routes/ssti/userProfile.ts:14',
+      'A3-ssti critical 0.85 routes/ssti/userProfile.ts:18',
+    ]);
+    expect(new Set(all.body.map((f: { owaspCategory: string }) => f.owaspCategory))).toEqual(
+      new Set(['A05:2025-Injection']),
+    );
+
+    // High-confidence critical findings via the API filters.
+    const critical = await request(app)
+      .get(`/api/scans/${res.body.id}/findings`)
+      .query({ severity: 'critical', minConfidence: '0.85' })
+      .set('Authorization', alice);
+    expect(critical.body).toHaveLength(6);
+
+    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: res.body.id } });
+    expect((scan.summaryJson as ScanSummary).findingsBySeverity).toEqual({
+      critical: 7,
+      high: 3,
+      medium: 0,
+      low: 0,
+      info: 0,
+    });
   });
 });
 

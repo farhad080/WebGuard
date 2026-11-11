@@ -14,7 +14,7 @@ const TODO_SECURITY = /(?:\/\/|#|\/\*|^\s*\*|<!--|--)\s*TODO\b[\s:(\-[]*SECURITY
 export const exampleTodoComment = registerDetector({
   id: 'example-todo-comment',
   title: 'Security TODO left in code',
-  owaspCategory: 'A04:2021-Insecure Design',
+  owaspCategory: 'A06:2025-Insecure Design',
   technique: 'pattern',
   explanation:
     'A "TODO SECURITY" comment marks a known, unresolved security gap. It is a reminder, ' +
@@ -33,7 +33,7 @@ export const exampleTodoComment = registerDetector({
         if (!TODO_SECURITY.test(line)) return;
         findings.push({
           detectorId: 'example-todo-comment',
-          owaspCategory: 'A04:2021-Insecure Design',
+          owaspCategory: 'A06:2025-Insecure Design',
           severity: 'info',
           confidence: 1,
           filePath: file.path,
