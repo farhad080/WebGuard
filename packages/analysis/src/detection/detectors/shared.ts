@@ -1,5 +1,5 @@
 import { textOf } from '../../ast/queries.js';
-import type { TaintFlow, TaintTrace } from '../../ast/taint.js';
+import { resolveValues, type TaintFlow, type TaintTrace } from '../../ast/taint.js';
 import type { AstNode, ParsedFile } from '../../ast/types.js';
 import type { DetectionContext, RawFinding } from '../types.js';
 
@@ -98,4 +98,45 @@ export function redact(value: string, keep = 4): string {
   const shown =
     value.length > 12 ? value.slice(0, keep) : value.slice(0, Math.min(2, value.length));
   return `${shown}…[redacted, ${value.length} chars]`;
+}
+
+export function propertyKey(prop: AstNode): string | undefined {
+  const key = (prop.raw as { key?: { type: string; name?: string; value?: string } }).key;
+  return key?.type === 'Identifier' ? key.name : key?.value;
+}
+
+export function unwrapAwait(node: AstNode): AstNode {
+  let n = node;
+  while (n.rawType === 'AwaitExpression' && n.children[0]) n = n.children[0];
+  return n;
+}
+
+/**
+ * Receiver looks like a data model / collection: `UserModel`, `models.User`, `db.users`,
+ * `usersCollection`, `userRepository`, or a variable holding a row fetched from one
+ * (`const product = await ProductModel.findByPk(id)`).
+ */
+export function isModelish(receiver: AstNode | undefined, depth = 0): boolean {
+  if (!receiver) return false;
+  const name = receiver.name ?? '';
+  const last = name.split('.').at(-1) ?? '';
+  if (
+    /^[A-Z][A-Za-z0-9]*$/.test(last) ||
+    /model|collection|repo(sitory)?$/i.test(last) ||
+    /^(db|this\.db)\./.test(name)
+  ) {
+    return true;
+  }
+  if (receiver.type === 'Identifier' && depth < 2) {
+    return resolveValues(receiver).some((v) => {
+      const value = unwrapAwait(v);
+      return (
+        value !== receiver &&
+        value.type === 'Call' &&
+        value.callee?.type === 'MemberAccess' &&
+        isModelish(value.callee.object, depth + 1)
+      );
+    });
+  }
+  return false;
 }

@@ -112,3 +112,18 @@ export {
   type TaintFlow,
   type Resolution,
 } from './ast/taint.js';
+export { brokenAccessControl } from './detection/detectors/a8-access-control.js';
+export { massAssignment } from './detection/detectors/a9-mass-assignment.js';
+export { missingCsrf } from './detection/detectors/a10-missing-csrf.js';
+
+// Route model
+export {
+  buildRouteTable,
+  getRouteTable,
+  isStateChanging,
+  type RouteTable,
+  type RouteEntry,
+  type Middleware,
+  type HttpMethod,
+  type AuthMechanism,
+} from './routes/route-table.js';

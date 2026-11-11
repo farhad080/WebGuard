@@ -11,7 +11,15 @@ import {
 import type { AstNode, ParsedFile } from '../../ast/types.js';
 import { registerDetector } from '../registry.js';
 import type { DetectionContext, RawFinding } from '../types.js';
-import { bestFlow, describeFlow, findingAt, parsedFiles, shorten } from './shared.js';
+import {
+  bestFlow,
+  describeFlow,
+  findingAt,
+  isModelish,
+  parsedFiles,
+  propertyKey,
+  shorten,
+} from './shared.js';
 
 /**
  * A4 — Cross-site scripting (dataflow + AST), classified as DOM, reflected, or stored.
@@ -162,11 +170,6 @@ function renderableFields(expr: AstNode): string[] {
   return [...out];
 }
 
-function propertyKey(prop: AstNode): string | undefined {
-  const key = (prop.raw as { key?: { type: string; name?: string; value?: string } }).key;
-  return key?.type === 'Identifier' ? key.name : key?.value;
-}
-
 /** Identifier at the root of `res.status(200).send` → `res`. */
 function responseRoot(callee: AstNode): string | undefined {
   let node: AstNode | undefined = callee.object;
@@ -177,38 +180,6 @@ function responseRoot(callee: AstNode): string | undefined {
     else return undefined;
   }
   return undefined;
-}
-
-function unwrapAwait(node: AstNode): AstNode {
-  let n = node;
-  while (n.rawType === 'AwaitExpression' && n.children[0]) n = n.children[0];
-  return n;
-}
-
-function isModelish(receiver: AstNode | undefined, depth = 0): boolean {
-  if (!receiver) return false;
-  const name = receiver.name ?? '';
-  const last = name.split('.').at(-1) ?? '';
-  if (
-    /^[A-Z][A-Za-z0-9]*$/.test(last) ||
-    /model|collection|repo(sitory)?$/i.test(last) ||
-    /^(db|this\.db)\./.test(name)
-  ) {
-    return true;
-  }
-  // `const product = await ProductModel.findByPk(id); product.update({...})`
-  if (receiver.type === 'Identifier' && depth < 2) {
-    return resolveValues(receiver).some((v) => {
-      const value = unwrapAwait(v);
-      return (
-        value !== receiver &&
-        value.type === 'Call' &&
-        value.callee?.type === 'MemberAccess' &&
-        isModelish(value.callee.object, depth + 1)
-      );
-    });
-  }
-  return false;
 }
 
 function htmlInLiterals(expr: AstNode): boolean {
@@ -371,7 +342,9 @@ function storedWrites(file: ParsedFile): StoredWrite[] {
             const trace = traceTaint(value, { isSource: httpSource, sanitizers: XSS_SANITIZERS });
             if (
               trace.tainted &&
-              trace.flows.some((f) => WHOLE_REQUEST_OBJECT.test(f.source.name ?? ''))
+              trace.flows.some(
+                (f) => WHOLE_REQUEST_OBJECT.test(f.source.name ?? '') && !f.throughCall,
+              )
             ) {
               out.push({ file, at: n, field: '*', value, trace, via });
             }

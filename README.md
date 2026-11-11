@@ -149,14 +149,17 @@ imported once from `detectors/index.ts`. The engine never changes. `example-todo
 
 Categories follow the **OWASP Top 10:2025**. Confidence bands: high ≥ 0.8, medium ≥ 0.5.
 
-| ID                     | Detects                                                                           | OWASP                                               | Technique      | Juice Shop challenges |
-| ---------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- | -------------- | --------------------- |
-| `A1-sql-injection`     | SQL injection                                                                     | A05:2025 – Injection                                | dataflow       | #1–#7                 |
-| `A2-nosql-injection`   | NoSQL operator / `$where` injection                                               | A05:2025 – Injection                                | dataflow       | #8–#10                |
-| `A3-ssti`              | SSTI / dynamic code evaluation                                                    | A05:2025 – Injection                                | dataflow       | #11                   |
-| `A4-xss`               | Cross-site scripting: DOM / reflected / stored                                    | A05:2025 – Injection (CWE-79)                       | dataflow + AST | #26–#30               |
-| `A5-hardcoded-secrets` | Hard-coded secrets (keys, tokens, passwords)                                      | A04:2025 – Cryptographic Failures (CWE-798)         | pattern        | #14                   |
-| `A6-weak-crypto`       | Weak crypto: broken algorithms, unsalted password hashing, encoding-as-encryption | A04:2025 – Cryptographic Failures (CWE-327/916/261) | AST + pattern  | #39, #40              |
+| ID                         | Detects                                                                           | OWASP                                               | Technique                   | Juice Shop challenges |
+| -------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------- | --------------------- |
+| `A1-sql-injection`         | SQL injection                                                                     | A05:2025 – Injection                                | dataflow                    | #1–#7                 |
+| `A2-nosql-injection`       | NoSQL operator / `$where` injection                                               | A05:2025 – Injection                                | dataflow                    | #8–#10                |
+| `A3-ssti`                  | SSTI / dynamic code evaluation                                                    | A05:2025 – Injection                                | dataflow                    | #11                   |
+| `A4-xss`                   | Cross-site scripting: DOM / reflected / stored                                    | A05:2025 – Injection (CWE-79)                       | dataflow + AST              | #26–#30               |
+| `A5-hardcoded-secrets`     | Hard-coded secrets (keys, tokens, passwords)                                      | A04:2025 – Cryptographic Failures (CWE-798)         | pattern                     | #14                   |
+| `A6-weak-crypto`           | Weak crypto: broken algorithms, unsalted password hashing, encoding-as-encryption | A04:2025 – Cryptographic Failures (CWE-327/916/261) | AST + pattern               | #39, #40              |
+| `A8-broken-access-control` | Missing authorization on sensitive routes; IDOR (candidates)                      | A01:2025 – Broken Access Control (CWE-862/639)      | AST + dataflow (RouteTable) | #20, #21, #22, #24    |
+| `A9-mass-assignment`       | Mass assignment; client-chosen field selection                                    | A01:2025 – Broken Access Control (CWE-915/213)      | AST + dataflow              | #13, #23, #30         |
+| `A10-missing-csrf`         | Cookie-authenticated state changes without CSRF protection                        | A01:2025 – Broken Access Control (CWE-352)          | config (RouteTable)         | #25                   |
 
 **A1 — SQL injection.** Sinks: `sequelize.query`, `knex.raw`, Prisma `$queryRawUnsafe` /
 `$executeRawUnsafe`, `db.run/all/get/each/exec`, and `*.query` / `*.execute` when the text looks
@@ -245,6 +248,54 @@ provider-format token is committed.
   other uses are reported as **low** (0.3). bcrypt, argon2, scrypt, and pbkdf2 are never
   flagged.
 
+**RouteTable** (`getRouteTable(ctx)` in `packages/analysis/src/routes`). It is built once per
+scan from the ASTs and shared by A8–A10. For Express-style apps/routers
+(`app.get/post/…`, `router.route(path).get(…)`) and NestJS controllers (`@Controller` +
+`@Get/@Post/…`, `@UseGuards`), each entry is
+`{ method, path, middlewareChain, handlerNode, authMechanism }`:
+
+- The middleware chain includes route middleware, earlier `app.use(...)` middleware for that
+  path, router mounts (`app.use('/api', auth, router)`), and Nest class guards. Session /
+  body-parser setup is marked as infrastructure, not auth.
+- Handlers resolve through Juice Shop-style factories (`retrieveBasket()` → the returned
+  `(req, res) => …`).
+- `authMechanism` is `bearer`, `cookie-session`, or `none`, inferred from the middleware (JWT
+  / `isAuthorized` vs session / `requireLogin`) and, failing that, from the handler
+  (`req.cookies.token`, `req.session`, `Authorization` header).
+
+**A8 — Broken access control / IDOR.** Severity **high**, confidence **0.5–0.6 (medium)**.
+Findings are labelled "Candidate … confirm manually", because authorization intent is semantic.
+
+- **Missing authorization**: PUT/PATCH/DELETE and admin/config/accounting routes with no
+  authentication middleware and no auth check in the handler. The evidence notes when the
+  matching front-end route is guarded only client-side (`canActivate`). Juice Shop #20, #22.
+  Authenticated admin routes without a role check get 0.5.
+- **IDOR** on authenticated routes: `findByPk(req.params.id)`, `findOne({ where: { id } })`,
+  `destroy/update/delete` keyed by a client id (`req.params/query/body`, Nest `@Param`) with
+  no ownership predicate (`UserId: req.user.id`) or owner comparison. Also writes that set a
+  client-supplied owned foreign key (`BasketId: req.body.BasketId`). Juice Shop #21, #24.
+  Routes behind a role guard are skipped.
+
+**A9 — Mass assignment / over-selection.** Severity **high**.
+
+- **Mass assignment**: the whole body is written (`create(req.body)`, `{ ...req.body }`,
+  `Object.assign(user, req.body)`). Confidence **0.85** when the model definition
+  (Sequelize `define`/`init`, class fields, Mongoose schema) has privileged fields (role,
+  isAdmin, UserId, price, …), **0.55** otherwise. Juice Shop #23 (client-set UserId), #30.
+- **Over-selection**: `attributes` / `select` / `projection` / `fields` taken from the client
+  (`attributes: req.query.fields.split(',')`). Confidence **0.8** when the model has sensitive
+  columns such as the password hash. Juice Shop #13.
+- Not flagged: `pick(req.body, [...])` and explicit fields, bodies validated upstream
+  (zod/joi/celebrate/express-validator middleware or `schema.parse(req.body)`), and Nest `@Body()`
+  DTOs.
+
+**A10 — Missing CSRF protection.** Severity **medium**. Flags state-changing routes
+authenticated by a cookie (session middleware, `req.session`, or a token read from
+`req.cookies`) with no CSRF middleware (csurf / lusca / csrf-csrf, on the route or via
+`app.use`) whose cookie lacks `SameSite=Lax/Strict` (session config or `res.cookie` options).
+Confidence 0.7 for session middleware, 0.6 when inferred from the handler. Juice Shop #25.
+Bearer-token APIs are excluded.
+
 **Taint tracing** (`traceTaint` in `packages/analysis`) is intra-procedural. It follows
 variables through assignments, reassignments, destructuring, `for…of`, and closures, plus
 class fields (`this.x` assigned in any method), callback parameters (`.subscribe(v => …)`,
@@ -316,3 +367,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 7. Injection detectors (SQLi, NoSQLi, SSTI)
 - [x] 8. Cross-Site Scripting detector
 - [x] 9. Secrets & weak-crypto detectors
+- [x] 10. Access-control & input detectors

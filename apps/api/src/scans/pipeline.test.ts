@@ -181,6 +181,9 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
         'A2-nosql-injection',
         'A3-ssti',
         'A4-xss',
+        'A8-broken-access-control',
+        'A9-mass-assignment',
+        'A10-missing-csrf',
       ],
       findingsTotal: 0,
       detectorErrors: [],
@@ -405,6 +408,9 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
       'A2-nosql-injection',
       'A3-ssti',
       'A4-xss',
+      'A8-broken-access-control',
+      'A9-mass-assignment',
+      'A10-missing-csrf',
     ]);
     // The healthy detectors' findings are still persisted (TODO, SQLi in users.js, XSS in widget.js).
     expect(await prisma.finding.count({ where: { scanId } })).toBe(3);
@@ -466,7 +472,11 @@ describe('injection detectors through the full pipeline', () => {
       'A3-ssti critical 0.85 routes/ssti/userProfile.ts:14',
       'A3-ssti critical 0.85 routes/ssti/userProfile.ts:18',
     ]);
-    expect(new Set(findings.map((f) => f.owaspCategory))).toEqual(new Set(['A05:2025-Injection']));
+    expect(new Set(injection.map((f) => f.owaspCategory))).toEqual(new Set(['A05:2025-Injection']));
+    // A8 also (correctly) reports the unauthenticated PATCH /reviews route in whole-body.js.
+    expect(findings.filter((f) => f.detectorId === 'A8-broken-access-control').map(line)).toEqual([
+      'A8-broken-access-control high 0.6 routes/nosql/whole-body.js:5',
+    ]);
     // A4 additionally reports the unsanitised review `message` writes, at low confidence
     // (nothing in this project renders them as HTML).
     expect(findings.filter((f) => f.detectorId === 'A4-xss').map(line)).toEqual([
@@ -484,7 +494,7 @@ describe('injection detectors through the full pipeline', () => {
     const scan = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
     expect((scan.summaryJson as ScanSummary).findingsBySeverity).toEqual({
       critical: 7,
-      high: 5,
+      high: 6, // 2 NoSQLi + unproven SQLi + 2 low-confidence stored XSS + 1 A8 route
       medium: 0,
       low: 0,
       info: 0,
@@ -634,5 +644,37 @@ describe('secrets & weak-crypto detectors through the full pipeline', () => {
     ]);
     expect(weak.some((f) => f.filePath === 'server/lib/checksum.js')).toBe(false);
     expect(weak.some((f) => f.filePath === 'server/lib/passwords.js')).toBe(false);
+  });
+});
+
+describe('access-control, mass-assignment & CSRF detectors through the full pipeline', () => {
+  it('persists route-level candidate findings with honest confidence', async () => {
+    const { findings } = await scanFixture('routes');
+    const routeLevel = findings.filter((f) => /^A(8|9|10)-/.test(f.detectorId));
+    expect(
+      routeLevel.map(
+        (f) => `${f.detectorId} ${f.severity} ${f.confidence} ${f.filePath}:${f.lineStart}`,
+      ),
+    ).toEqual([
+      'A8-broken-access-control high 0.6 nest/admin.controller.ts:10',
+      'A8-broken-access-control high 0.55 nest/admin.controller.ts:23',
+      'A8-broken-access-control high 0.55 routes/basket.ts:8',
+      'A8-broken-access-control high 0.55 routes/basket.ts:15',
+      'A8-broken-access-control high 0.55 routes/basket.ts:30',
+      'A9-mass-assignment high 0.85 routes/feedback.ts:14',
+      'A9-mass-assignment high 0.85 routes/users.ts:8',
+      'A9-mass-assignment high 0.8 routes/users.ts:32',
+      'A8-broken-access-control high 0.6 server.ts:18',
+      'A8-broken-access-control high 0.6 server.ts:31',
+      'A10-missing-csrf medium 0.6 server.ts:44',
+    ]);
+    expect(new Set(routeLevel.map((f) => f.owaspCategory))).toEqual(
+      new Set(['A01:2025-Broken Access Control']),
+    );
+    expect(
+      routeLevel
+        .filter((f) => f.detectorId === 'A8-broken-access-control')
+        .every((f) => f.explanation.startsWith('Candidate (confirm manually)')),
+    ).toBe(true);
   });
 });

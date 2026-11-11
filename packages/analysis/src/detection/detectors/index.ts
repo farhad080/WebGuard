@@ -9,6 +9,9 @@ import './a3-ssti.js';
 import './a4-xss.js';
 import './a5-hardcoded-secrets.js';
 import './a6-weak-crypto.js';
+import './a8-access-control.js';
+import './a9-mass-assignment.js';
+import './a10-missing-csrf.js';
 
 /** A fresh registry with every built-in detector (callers may register more on it). */
 export function createDefaultDetectorRegistry(): DetectorRegistry {

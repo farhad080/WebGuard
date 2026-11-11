@@ -115,6 +115,17 @@ export const nosqlInjection = registerDetector({
         }
 
         if (!NOSQL_METHODS.has(method) || !isCollectionReceiver(callee.object)) continue;
+        // Sequelize `Model.update(values, { where })`: the first argument is values, not a selector.
+        const second = call.arguments?.[1];
+        if (
+          second?.type === 'Object' &&
+          second.children.some(
+            (p) =>
+              p.type === 'Property' && (p.raw as { key?: { name?: string } }).key?.name === 'where',
+          )
+        ) {
+          continue;
+        }
         const selectorArg = call.arguments?.[0];
         if (!selectorArg || selectorArg.type === 'Function') continue; // Array#find(fn)
 
