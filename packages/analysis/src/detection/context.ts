@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { ProjectProfile } from '@webguard/core';
 import type { ParsedFile } from '../ast/types.js';
@@ -15,6 +15,32 @@ export interface DetectionContextInput {
 }
 
 const DEFAULT_MAX_READ_BYTES = 5 * 1024 * 1024;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn']);
+const MAX_LISTED_FILES = 50_000;
+
+/** Every regular file in the project (incl. binaries and unrecognized types), `/`-separated. */
+function listAllFiles(root: string): string[] {
+  const out: string[] = [];
+  const visit = (dir: string) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= MAX_LISTED_FILES) return;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) visit(abs);
+      } else if (entry.isFile()) {
+        out.push(path.relative(root, abs).split(path.sep).join('/'));
+      }
+    }
+  };
+  visit(root);
+  return out.sort();
+}
 
 export function createDetectionContext(input: DetectionContextInput): DetectionContext {
   const root = path.resolve(input.rootDir);
@@ -54,6 +80,7 @@ export function createDetectionContext(input: DetectionContextInput): DetectionC
   return {
     profile: input.profile,
     files: input.files,
+    allFiles: listAllFiles(root),
     sourceFiles: input.profile.sourceFiles,
     manifests: input.profile.manifests,
     configPaths: input.profile.sensitivePaths,

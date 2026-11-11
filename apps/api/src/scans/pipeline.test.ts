@@ -183,7 +183,10 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
         'A4-xss',
         'A8-broken-access-control',
         'A9-mass-assignment',
+        'A11-vulnerable-deps',
         'A10-missing-csrf',
+        'A7-sensitive-file-exposure',
+        'A12-security-misconfig',
       ],
       findingsTotal: 0,
       detectorErrors: [],
@@ -307,6 +310,18 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
         filePath: 'src/routes/users.js',
         lineStart: 8,
       }),
+      expect.objectContaining({
+        detectorId: 'A12-security-misconfig',
+        severity: 'medium',
+        filePath: 'src/server.ts',
+        lineStart: 4,
+      }),
+      expect.objectContaining({
+        detectorId: 'A12-security-misconfig',
+        severity: 'low',
+        filePath: 'src/server.ts',
+        lineStart: 8,
+      }),
       {
         id: expect.any(String),
         scanId,
@@ -410,10 +425,14 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
       'A4-xss',
       'A8-broken-access-control',
       'A9-mass-assignment',
+      'A11-vulnerable-deps',
       'A10-missing-csrf',
+      'A7-sensitive-file-exposure',
+      'A12-security-misconfig',
     ]);
-    // The healthy detectors' findings are still persisted (TODO, SQLi in users.js, XSS in widget.js).
-    expect(await prisma.finding.count({ where: { scanId } })).toBe(3);
+    // The healthy detectors' findings are still persisted: TODO, SQLi in users.js, XSS in
+    // widget.js, and A12's missing-headers + security.txt notes on server.ts.
+    expect(await prisma.finding.count({ where: { scanId } })).toBe(5);
   });
 });
 
@@ -675,6 +694,62 @@ describe('access-control, mass-assignment & CSRF detectors through the full pipe
       routeLevel
         .filter((f) => f.detectorId === 'A8-broken-access-control')
         .every((f) => f.explanation.startsWith('Candidate (confirm manually)')),
+    ).toBe(true);
+  });
+});
+
+describe('file-exposure, dependency & misconfiguration detectors through the full pipeline', () => {
+  it('persists exposure + misconfig findings and attaches informational notes', async () => {
+    const { scanId, findings } = await scanFixture('exposure');
+    const relevant = findings
+      .filter((f) => /^A(7|12)-/.test(f.detectorId))
+      .map((f) => `${f.detectorId} ${f.severity} ${f.filePath}:${f.lineStart}`);
+    expect(relevant).toEqual([
+      'A7-sensitive-file-exposure high ftp/acquisitions.md:1',
+      'A7-sensitive-file-exposure high ftp/coupons_2013.md.bak:1',
+      'A7-sensitive-file-exposure high ftp/incident-support.kdbx:1',
+      'A7-sensitive-file-exposure high ftp/package.json.bak:1',
+      'A7-sensitive-file-exposure medium routes/currentUser.js:9',
+      'A7-sensitive-file-exposure high routes/fileServer.js:18',
+      'A12-security-misconfig medium server.js:11',
+      'A12-security-misconfig medium server.js:19',
+      'A12-security-misconfig medium server.js:26',
+      'A12-security-misconfig medium server.js:28',
+      'A12-security-misconfig high server.js:31',
+      'A12-security-misconfig low server.js:33',
+    ]);
+    // Directory listing is reported once, correlated across A7 and A12.
+    const listing = findings.find((f) => f.filePath === 'server.js' && f.lineStart === 19)!;
+    expect([...listing.contributingDetectors].sort()).toEqual([
+      'A12-security-misconfig',
+      'A7-sensitive-file-exposure',
+    ]);
+
+    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
+    const notes = (scan.summaryJson as ScanSummary).informationalNotes!;
+    expect(notes.map((n) => n.id)).toEqual([
+      'weak-password-policy',
+      'information-disclosure',
+      'discovery',
+    ]);
+  });
+
+  it('persists vulnerable and typosquatted dependency findings, offline', async () => {
+    const { findings } = await scanFixture('deps');
+    const deps = findings
+      .filter((f) => f.detectorId === 'A11-vulnerable-deps')
+      .map((f) => `${f.severity} ${f.filePath}:${f.lineStart} ${f.evidence[0]!.split(':')[0]}`)
+      .sort(); // DB collation orders package.json / package-lock.json differently per locale
+    expect(deps).toEqual([
+      'critical package-lock.json:23 minimist@1.2.5 (transitive dependency)',
+      'high frontend/package.json:6 possible typosquat',
+      'high package.json:12 sanitize-html@1.4.2 (direct dependency)',
+      'high package.json:6 possible typosquat',
+      'high package.json:8 express-jwt@0.1.3 (direct dependency)',
+      'medium package.json:11 request@2.88.2 (direct dependency)',
+    ]);
+    expect(
+      findings.every((f) => f.owaspCategory === 'A03:2025-Software Supply Chain Failures'),
     ).toBe(true);
   });
 });

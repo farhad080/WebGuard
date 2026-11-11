@@ -149,17 +149,20 @@ imported once from `detectors/index.ts`. The engine never changes. `example-todo
 
 Categories follow the **OWASP Top 10:2025**. Confidence bands: high ≥ 0.8, medium ≥ 0.5.
 
-| ID                         | Detects                                                                           | OWASP                                               | Technique                   | Juice Shop challenges |
-| -------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------- | --------------------- |
-| `A1-sql-injection`         | SQL injection                                                                     | A05:2025 – Injection                                | dataflow                    | #1–#7                 |
-| `A2-nosql-injection`       | NoSQL operator / `$where` injection                                               | A05:2025 – Injection                                | dataflow                    | #8–#10                |
-| `A3-ssti`                  | SSTI / dynamic code evaluation                                                    | A05:2025 – Injection                                | dataflow                    | #11                   |
-| `A4-xss`                   | Cross-site scripting: DOM / reflected / stored                                    | A05:2025 – Injection (CWE-79)                       | dataflow + AST              | #26–#30               |
-| `A5-hardcoded-secrets`     | Hard-coded secrets (keys, tokens, passwords)                                      | A04:2025 – Cryptographic Failures (CWE-798)         | pattern                     | #14                   |
-| `A6-weak-crypto`           | Weak crypto: broken algorithms, unsalted password hashing, encoding-as-encryption | A04:2025 – Cryptographic Failures (CWE-327/916/261) | AST + pattern               | #39, #40              |
-| `A8-broken-access-control` | Missing authorization on sensitive routes; IDOR (candidates)                      | A01:2025 – Broken Access Control (CWE-862/639)      | AST + dataflow (RouteTable) | #20, #21, #22, #24    |
-| `A9-mass-assignment`       | Mass assignment; client-chosen field selection                                    | A01:2025 – Broken Access Control (CWE-915/213)      | AST + dataflow              | #13, #23, #30         |
-| `A10-missing-csrf`         | Cookie-authenticated state changes without CSRF protection                        | A01:2025 – Broken Access Control (CWE-352)          | config (RouteTable)         | #25                   |
+| ID                           | Detects                                                                                    | OWASP                                                          | Technique                   | Juice Shop challenges   |
+| ---------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------- | --------------------------- | ----------------------- |
+| `A1-sql-injection`           | SQL injection                                                                              | A05:2025 – Injection                                           | dataflow                    | #1–#7                   |
+| `A2-nosql-injection`         | NoSQL operator / `$where` injection                                                        | A05:2025 – Injection                                           | dataflow                    | #8–#10                  |
+| `A3-ssti`                    | SSTI / dynamic code evaluation                                                             | A05:2025 – Injection                                           | dataflow                    | #11                     |
+| `A4-xss`                     | Cross-site scripting: DOM / reflected / stored                                             | A05:2025 – Injection (CWE-79)                                  | dataflow + AST              | #26–#30                 |
+| `A5-hardcoded-secrets`       | Hard-coded secrets (keys, tokens, passwords)                                               | A04:2025 – Cryptographic Failures (CWE-798)                    | pattern                     | #14                     |
+| `A6-weak-crypto`             | Weak crypto: broken algorithms, unsalted password hashing, encoding-as-encryption          | A04:2025 – Cryptographic Failures (CWE-327/916/261)            | AST + pattern               | #39, #40                |
+| `A8-broken-access-control`   | Missing authorization on sensitive routes; IDOR (candidates)                               | A01:2025 – Broken Access Control (CWE-862/639)                 | AST + dataflow (RouteTable) | #20, #21, #22, #24      |
+| `A9-mass-assignment`         | Mass assignment; client-chosen field selection                                             | A01:2025 – Broken Access Control (CWE-915/213)                 | AST + dataflow              | #13, #23, #30           |
+| `A10-missing-csrf`           | Cookie-authenticated state changes without CSRF protection                                 | A01:2025 – Broken Access Control (CWE-352)                     | config (RouteTable)         | #25                     |
+| `A7-sensitive-file-exposure` | Backups/keys/dumps/confidential files in served dirs; listing; suffix-filter bypass; JSONP | A02:2025 – Security Misconfiguration (CWE-538/548/22)          | config                      | #12, #16, #18, #19, #38 |
+| `A11-vulnerable-deps`        | Vulnerable, EOL, and typosquatted dependencies                                             | A03:2025 – Software Supply Chain Failures (CWE-1395/1104/1357) | dependency                  | #31, #32                |
+| `A12-security-misconfig`     | Verbose errors, missing security headers, listing, deprecated routes, no security.txt      | A02:2025 – Security Misconfiguration (CWE-209/693/548/912)     | AST + config                | #35, #36, #37           |
 
 **A1 — SQL injection.** Sinks: `sequelize.query`, `knex.raw`, Prisma `$queryRawUnsafe` /
 `$executeRawUnsafe`, `db.run/all/get/each/exec`, and `*.query` / `*.execute` when the text looks
@@ -296,6 +299,52 @@ authenticated by a cookie (session middleware, `req.session`, or a token read fr
 Confidence 0.7 for session middleware, 0.6 when inferred from the handler. Juice Shop #25.
 Bearer-token APIs are excluded.
 
+**A7 — Sensitive / backup file exposure.**
+
+- **Served roots** come from `express.static` / `serveStatic` / `serveIndex`, file-serving
+  routes (`res.sendFile(path.resolve('ftp/', file))`), and the profiler's static dirs
+  (public/, static/, …).
+- **Inside a served root**, backups (`*.bak`, `*.old`, …), dumps, IaC, `.env*`, keys, credential
+  stores (`*.kdbx`), VCS metadata, and confidential-looking documents are flagged as **high**,
+  located at the exposed file. Juice Shop #12, #16, #18, #38.
+- **Directory listing** is **medium** and correlates with A12.
+- **Suffix-only type filters** (`endsWith('.md')`) on file-serving routes are **high**: a null
+  byte (`%2500.md`) or a double extension bypasses them. #38.
+- **JSONP endpoints** (`res.jsonp`) are best effort, at confidence 0.35. #19.
+
+**A11 — Vulnerable & typosquatted dependencies.**
+
+- The resolved dependency set (direct + transitive) is read from `package.json` and
+  package-lock (v1–v3) / yarn / pnpm lockfiles. Lockfile versions are exact (0.9). Without a
+  lockfile, a range is checked at its minimum version (0.7).
+- Advisories come from pluggable **`AdvisorySource`s**. The default is the bundled offline
+  snapshot (a small curated sample: sanitize-html, express-jwt, jsonwebtoken, lodash,
+  minimist, moment, plus EOL `request` / `marsdb`). It works without network access.
+  `OsvAdvisorySource` is a stub for OSV.dev's batch API that stays inactive unless constructed
+  with `allowNetwork: true` and an injected `fetch`, so scans never assume outbound access.
+  Juice Shop #31.
+- **Typosquats**: a dependency 1–2 edits from a bundled popular-package list, or equal to one
+  after stripping a `-js` / `node-` affix, that isn't popular itself or on the verified
+  allowlist (e.g. `preact`). The finding names the likely intended package. #32: `epilogue-js`
+  → `epilogue`, `ngy-cookie` → `ngx-cookie`.
+
+**A12 — Security misconfiguration.**
+
+- **Verbose errors**: error handlers sending `err.stack` / the raw error, and `errorhandler()`.
+  **High**. Suppressed when gated behind a `NODE_ENV` / environment check. #36.
+- **Missing security headers** (no `helmet()`, CSP, HSTS, `X-Content-Type-Options`):
+  **medium**, at 0.6.
+- **Directory listing** and **deprecated/legacy routes** still mounted, including an upload
+  route that still parses XML (with an XXE note when `noent: true`): medium, low confidence. #37.
+- **No `/.well-known/security.txt`**: a **low** hygiene note. #35.
+- Proxy/CDN/deploy-layer configuration is invisible to source analysis, and the explanations
+  say so.
+
+**Informational notes.** Documented challenges that aren't code defects detectable from source
+are listed in every scan summary (`summary_json.informationalNotes`) as "review manually"
+items instead of being dropped: #15 weak password policy, #17 information disclosure in
+published content, and #33/#34 discovery.
+
 **Taint tracing** (`traceTaint` in `packages/analysis`) is intra-procedural. It follows
 variables through assignments, reassignments, destructuring, `for…of`, and closures, plus
 class fields (`this.x` assigned in any method), callback parameters (`.subscribe(v => …)`,
@@ -368,3 +417,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 8. Cross-Site Scripting detector
 - [x] 9. Secrets & weak-crypto detectors
 - [x] 10. Access-control & input detectors
+- [x] 11. Files, dependencies & misconfig detectors

@@ -9,6 +9,7 @@ import {
   dedupeFindings,
   DetectionEngine,
   parseSourceFiles,
+  INFORMATIONAL_NOTES,
   ProfilerService,
   type DetectorRegistry,
   type ParsedFile,
@@ -104,6 +105,8 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
         detectorId,
         message,
       })),
+      // Documented weakness classes that need manual/dynamic review: shown, not dropped.
+      informationalNotes: [...INFORMATIONAL_NOTES],
     };
 
     // Findings and the completed status land atomically, so the summary counts always match

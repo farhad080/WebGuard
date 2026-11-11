@@ -113,6 +113,19 @@ export interface ProjectProfile {
   totals: { files: number; bytes: number };
 }
 
+/**
+ * A documented challenge/weakness class that source analysis cannot detect reliably
+ * (policy, runtime behaviour, discovery). Shown as informational instead of being dropped.
+ */
+export interface InformationalNote {
+  id: string;
+  title: string;
+  /** Related reference(s), e.g. Juice Shop challenge numbers. */
+  references: string[];
+  /** Why it isn't detected from source, and how to check it instead. */
+  note: string;
+}
+
 export interface DetectorErrorInfo {
   detectorId: string;
   message: string;
@@ -146,6 +159,8 @@ export interface ScanSummary {
   findingsByOwaspCategory?: Partial<Record<OwaspCategory, number>>;
   /** Detectors that threw or returned invalid findings. Non-fatal. */
   detectorErrors?: DetectorErrorInfo[];
+  /** Weakness classes that need manual/dynamic review (not findings). */
+  informationalNotes?: InformationalNote[];
   /** Present when status is `failed`. */
   error?: string;
 }

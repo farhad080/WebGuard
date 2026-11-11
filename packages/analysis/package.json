@@ -19,10 +19,12 @@
   "dependencies": {
     "@babel/parser": "^7.29.13",
     "@babel/types": "^7.29.11",
-    "@webguard/core": "*"
+    "@webguard/core": "*",
+    "semver": "^7.8.6"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
+    "@types/semver": "^7.8.0",
     "vitest": "^2.1.8"
   }
 }

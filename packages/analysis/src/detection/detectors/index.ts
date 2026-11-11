@@ -12,6 +12,9 @@ import './a6-weak-crypto.js';
 import './a8-access-control.js';
 import './a9-mass-assignment.js';
 import './a10-missing-csrf.js';
+import './a7-sensitive-file-exposure.js';
+import './a11-vulnerable-deps.js';
+import './a12-security-misconfig.js';
 
 /** A fresh registry with every built-in detector (callers may register more on it). */
 export function createDefaultDetectorRegistry(): DetectorRegistry {

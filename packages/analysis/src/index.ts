@@ -127,3 +127,26 @@ export {
   type HttpMethod,
   type AuthMechanism,
 } from './routes/route-table.js';
+export { sensitiveFileExposure } from './detection/detectors/a7-sensitive-file-exposure.js';
+export {
+  vulnerableDependencies,
+  createDependencyDetector,
+  type DependencyDetectorOptions,
+} from './detection/detectors/a11-vulnerable-deps.js';
+export { securityMisconfig } from './detection/detectors/a12-security-misconfig.js';
+export { INFORMATIONAL_NOTES } from './detection/informational.js';
+
+// Dependencies & advisories
+export {
+  SnapshotAdvisorySource,
+  OsvAdvisorySource,
+  type AdvisorySource,
+  type Advisory,
+  type AdvisoryMatch,
+  type AdvisoryResult,
+  type PackageRef,
+  type OsvSourceOptions,
+} from './deps/advisories.js';
+export { ADVISORY_SNAPSHOT, SNAPSHOT_META } from './deps/advisory-snapshot.js';
+export { collectDependencies, editDistance, type ResolvedDependency } from './deps/dependencies.js';
+export { POPULAR_PACKAGES, TYPOSQUAT_ALLOWLIST } from './deps/popular-packages.js';
