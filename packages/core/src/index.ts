@@ -27,12 +27,112 @@ export interface Project {
   createdAt: IsoDateString;
 }
 
+// ---------------------------------------------------------------------------
+// Project profile (produced by the profiler, stored in scan summary_json.profile)
+// ---------------------------------------------------------------------------
+
+export type Language =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'php'
+  | 'ruby'
+  | 'java'
+  | 'go'
+  | 'csharp'
+  | 'html'
+  | 'css'
+  | 'vue'
+  | 'svelte'
+  | 'json'
+  | 'yaml'
+  | 'toml'
+  | 'xml'
+  | 'sql'
+  | 'shell'
+  | 'dockerfile'
+  | 'terraform'
+  | 'markdown';
+
+export interface LanguageStat {
+  language: Language;
+  files: number;
+  bytes: number;
+}
+
+export type FrameworkKind = 'runtime' | 'framework';
+
+export interface DetectedFramework {
+  /** e.g. "Node.js", "Express", "React", "Angular". */
+  name: string;
+  kind: FrameworkKind;
+  /** Manifest that revealed it, e.g. "package.json" or "api/package.json". */
+  evidence: string;
+}
+
+export type ManifestKind = 'manifest' | 'lockfile';
+
+export interface ManifestFile {
+  path: string;
+  /** Basename, e.g. "package.json", "yarn.lock". */
+  type: string;
+  kind: ManifestKind;
+}
+
+export type SensitivePathCategory =
+  | 'env'
+  | 'dockerfile'
+  | 'compose'
+  | 'terraform'
+  | 'infra-config'
+  | 'key-material'
+  | 'static-served';
+
+export interface SensitivePath {
+  path: string;
+  category: SensitivePathCategory;
+}
+
+export interface SourceFile {
+  path: string;
+  language: Language;
+  bytes: number;
+}
+
+export type IgnoreReason = 'ignored-dir' | 'binary' | 'too-large' | 'unrecognized';
+
+export interface ProjectProfile {
+  /** Sorted by file count, descending. */
+  languages: LanguageStat[];
+  frameworks: DetectedFramework[];
+  manifests: ManifestFile[];
+  sensitivePaths: SensitivePath[];
+  /** Files the analysis stages should read. All paths are `/`-separated and project-relative. */
+  sourceFiles: SourceFile[];
+  ignored: { total: number; byReason: Record<IgnoreReason, number> };
+  totals: { files: number; bytes: number };
+}
+
+export interface ParseErrorSample {
+  path: string;
+  message: string;
+  line?: number;
+  column?: number;
+}
+
 /** Written by the worker. Detector results are a placeholder until detection exists. */
 export interface ScanSummary {
   filesExtracted?: number;
   totalBytes?: number;
   /** Symlinks, special files, and encrypted entries that were not extracted. */
   skippedEntries?: number;
+  profile?: ProjectProfile;
+  /** Source files that produced an AST (including ones parsed with recovered errors). */
+  filesParsed?: number;
+  /** Source files that had a parse error (fatal or recovered). */
+  parseErrors?: number;
+  /** First few parse errors, for display. */
+  parseErrorSamples?: ParseErrorSample[];
   detectors?: string[];
   /** Present when status is `failed`. */
   error?: string;

@@ -45,6 +45,11 @@ export const config = {
     return positiveNumber('MAX_UPLOAD_BYTES', 50 * MiB);
   },
 
+  /** Source files larger than this are profiled but not parsed (minified/generated code). */
+  get analysisMaxFileBytes(): number {
+    return positiveNumber('ANALYSIS_MAX_FILE_BYTES', 1 * MiB);
+  },
+
   get extraction() {
     return {
       maxTotalBytes: positiveNumber('EXTRACT_MAX_TOTAL_BYTES', 500 * MiB),

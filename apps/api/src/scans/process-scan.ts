@@ -1,7 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { ScanSummary } from '@webguard/core';
+import type { Prisma } from '@prisma/client';
+import { parseSourceFiles, ProfilerService } from '@webguard/analysis';
+import type { ParseErrorSample, ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
 import { prisma } from '../db.js';
 import { ExtractionError, ExtractorService, type ExtractionLimits } from './extractor.js';
@@ -12,9 +14,11 @@ export interface ProcessScanOptions {
   limits?: Partial<ExtractionLimits>;
 }
 
+const MAX_PARSE_ERROR_SAMPLES = 20;
+
 /**
- * Drives one scan through queued → running → completed | failed.
- * Detection is a placeholder for now: the summary only reports extraction stats.
+ * Drives one scan through queued → running → completed | failed:
+ * download → safe-extract → profile → parse. Detection is not wired in yet.
  */
 export async function processScan(scanId: string, options: ProcessScanOptions = {}): Promise<void> {
   const storage = options.storage ?? getStorage();
@@ -44,15 +48,43 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       data: { scanId, kind: 'extracted', storageKey: extractedKey },
     });
 
+    // Analysis inputs: profile the project, then parse every supported source file.
+    // A file that fails to parse is recorded and skipped; it never fails the scan.
+    const profile = await new ProfilerService({
+      maxFileBytes: config.analysisMaxFileBytes,
+    }).profile(extractDir);
+    let filesParsed = 0;
+    let parseErrors = 0;
+    const parseErrorSamples: ParseErrorSample[] = [];
+    for await (const file of parseSourceFiles(extractDir, profile)) {
+      // Detectors will consume `file` here (next step). For now we only count.
+      if (file.ast) filesParsed++;
+      if (file.parseError) {
+        parseErrors++;
+        if (parseErrorSamples.length < MAX_PARSE_ERROR_SAMPLES) {
+          const { message, line, column } = file.parseError;
+          parseErrorSamples.push({ path: file.path, message, line, column });
+        }
+      }
+    }
+
     const summary: ScanSummary = {
       filesExtracted: result.filesExtracted,
       totalBytes: result.totalBytes,
       skippedEntries: result.skippedEntries,
+      profile,
+      filesParsed,
+      parseErrors,
+      parseErrorSamples,
       detectors: [],
     };
     await prisma.scan.updateMany({
       where: { id: scanId },
-      data: { status: 'completed', finishedAt: new Date(), summaryJson: { ...summary } },
+      data: {
+        status: 'completed',
+        finishedAt: new Date(),
+        summaryJson: summary as unknown as Prisma.InputJsonObject,
+      },
     });
   } catch (err) {
     // Archive problems are reported verbatim; anything else gets a generic message so

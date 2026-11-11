@@ -9,6 +9,7 @@ the exact file and line, explains the risk, and suggests a secure fix.
 - `apps/api` — backend API (auth, projects, scans, detection engine)
 - `apps/web` — frontend SPA
 - `packages/core` — shared types
+- `packages/analysis` — project profiler + parser/AST layer (detector inputs)
 
 ## Getting started
 
@@ -30,7 +31,9 @@ POST /api/projects/:id/scans  (multipart, field "file")
   → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
   → queue             BullMQ job { scanId } on Redis; scan status = queued
   → worker            status = running → safe-extract → artifacts(kind = extracted)
-                      → summary_json { filesExtracted, totalBytes, detectors: [] } → completed
+                      → profile → parse (common AST)
+                      → summary_json { filesExtracted, totalBytes, profile, filesParsed,
+                                       parseErrors, parseErrorSamples, detectors: [] } → completed
                       (any error → failed, summary_json.error, temp dir removed)
 ```
 
@@ -49,6 +52,48 @@ Clients poll `GET /api/scans/:id` to follow `queued → running → completed | 
   actually written), and per-entry compression ratio (`EXTRACT_MAX_COMPRESSION_RATIO`, 100:1).
 - **Never materializes symlinks or special files:** symlinks, devices, FIFOs, and encrypted
   entries are skipped. Files are created exclusively (`wx`), so duplicates can't overwrite.
+
+## Analysis inputs
+
+`packages/analysis` produces everything the detection engine consumes. It is framework-free
+(pure Node), so it can run in the worker or anywhere else.
+
+**ProjectProfile** (`ProfilerService`, stored as `summary_json.profile`; type in `packages/core`):
+
+- `languages` — per-language file and byte counts (by extension, plus shebang / `<?php` heuristics)
+- `frameworks` — runtimes and frameworks from manifests (e.g. `package.json` → Node.js;
+  `express`, `react`, `@angular/core`, `next`, `@nestjs/core`, … dependencies)
+- `manifests` — manifests and lockfiles (`package.json`, `package-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, plus Python/PHP/Ruby/Go/Java equivalents)
+- `sensitivePaths` — `.env*`, `Dockerfile`, `docker-compose*`, Terraform, YAML in infra/CI dirs,
+  key material, and anything under a served dir (`public/`, `static/`, `www/`, …)
+- `sourceFiles` — what to analyze. `node_modules`, `dist`, `build`, `.git` (and similar) are
+  never descended; binaries and files over `ANALYSIS_MAX_FILE_BYTES` (1 MB) are skipped and
+  counted in `ignored.byReason`.
+
+**Common AST contract** (language-independent):
+
+- `ParsedFile { path, language, ast, sourceText, lineIndex, parseError? }`
+- `AstNode { type, rawType, loc { startLine, startCol, endLine, endCol }, children, tags, raw }`
+  with a small normalized vocabulary (`Call`, `MemberAccess`, `Assignment`, `StringLiteral`,
+  `Function`, …) and resolved names (`db.query`, `req.body.name`). `raw` is the escape hatch
+  to the native parser node; `parent` links are available but non-enumerable.
+- Reusable queries: `findCalls(['db.query', '*.exec'])`, `findAssignments()`,
+  `findStringLiterals()`, `findMemberWrites(['innerHTML'])`, `findTagged('source:*')`,
+  `containsSource(node)`, `textOf(file, node)`.
+
+**Source/sink tagging.** After parsing, tag rules mark nodes, e.g. reads of
+`req.body / query / params / headers / cookies` → `source:http-input`, and
+`innerHTML` writes, `eval`, and `child_process.exec` → `sink:*`. Detectors can supply their
+own `TagRule`s. Tagging is syntactic; following destructuring and aliases is left to the
+data-flow pass built on top.
+
+**Pluggable parsers.** Each language is a `ParserAdapter` registered in a `ParserRegistry`
+keyed by language (`createDefaultParserRegistry()`). The JS/TS adapter uses **@babel/parser**:
+one parser for JS/JSX/TS/TSX with decorators, exact locations, and error recovery, pure JS
+with no native/WASM bindings (unlike tree-sitter), and no TypeScript program to build (unlike
+ts-morph). Adding Python later means writing one adapter and registering it. Unparseable files
+never fail a scan: they get a non-fatal `parseError` and the scan moves on.
 
 ## Authentication
 
@@ -108,3 +153,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 2. Backend API & JWT authentication
 - [x] 3. Projects & scans data model + CRUD
 - [x] 4. ZIP upload, safe extraction & job queue
+- [x] 5. Project profiler + parser/AST layer

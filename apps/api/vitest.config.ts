@@ -10,6 +10,14 @@ const testDatabaseUrl =
   process.env.TEST_DATABASE_URL ?? 'postgres://webguard:webguard@localhost:5432/webguard_test';
 
 export default defineConfig({
+  resolve: {
+    // Test against workspace sources, not possibly-stale dist builds.
+    alias: {
+      '@webguard/analysis': fileURLToPath(
+        new URL('../../packages/analysis/src/index.ts', import.meta.url),
+      ),
+    },
+  },
   test: {
     env: {
       DATABASE_URL: testDatabaseUrl,

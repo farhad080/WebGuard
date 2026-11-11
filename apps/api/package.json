@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run build --workspace @webguard/analysis",
     "dev": "node scripts/with-env.mjs tsx watch src/server.ts",
+    "preworker": "npm run build --workspace @webguard/analysis",
     "worker": "node scripts/with-env.mjs tsx watch src/worker.ts",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
@@ -18,6 +20,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@webguard/analysis": "*",
     "@webguard/core": "*",
     "argon2": "^0.45.2",
     "bullmq": "^5.81.5",

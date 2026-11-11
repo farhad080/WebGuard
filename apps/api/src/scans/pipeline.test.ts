@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -157,12 +157,18 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
     expect(final.startedAt).not.toBeNull(); // it passed through `running`
     expect(final.finishedAt).not.toBeNull();
     expect(new Date(final.startedAt!) <= new Date(final.finishedAt!)).toBe(true);
-    expect(final.summary).toEqual({
+    expect(final.summary).toMatchObject({
       filesExtracted: 3,
       totalBytes: expect.any(Number),
       skippedEntries: 0,
+      filesParsed: 2, // src/app.js, src/lib/util.js
+      parseErrors: 0,
       detectors: [],
     });
+    expect(final.summary?.profile?.languages.map((l) => l.language)).toEqual([
+      'javascript',
+      'html',
+    ]);
 
     const extracted = await prisma.artifact.findFirst({ where: { scanId, kind: 'extracted' } });
     expect(extracted?.storageKey).toBe(storageKeys.extracted(scanId));
@@ -186,6 +192,64 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
     ).toBe(0);
     expect(await getStorage().list(storageKeys.extracted(created.body.id))).toEqual([]);
     expect(existsSync(path.join(os.tmpdir(), 'webguard-zip-slip-pwned.txt'))).toBe(false);
+  });
+});
+
+/** Zips the analysis package's mini-express fixture, plus a node_modules dir to be ignored. */
+async function miniExpressZip(): Promise<Buffer> {
+  const root = fileURLToPath(
+    new URL('../../../../packages/analysis/test/fixtures/mini-express', import.meta.url),
+  );
+  const entries = (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => path.join(e.parentPath, e.name));
+  return buildZip([
+    ...(await Promise.all(
+      entries.map(async (abs) => ({
+        name: path.relative(root, abs).split(path.sep).join('/'),
+        data: await readFile(abs),
+      })),
+    )),
+    { name: 'node_modules/express/index.js', data: 'module.exports = () => {};' },
+    { name: 'node_modules/express/package.json', data: '{"name":"express"}' },
+  ]);
+}
+
+describe('processScan analysis inputs (profile + parse)', () => {
+  it('profiles the project and parses sources; a broken file does not fail the scan', async () => {
+    const zip = await miniExpressZip();
+    const res = await upload(alice, (req) =>
+      req.attach('file', zip, {
+        filename: 'mini-express.zip',
+        contentType: 'application/zip',
+      }),
+    );
+    expect(res.status).toBe(201);
+    await processScan(res.body.id);
+
+    const scan = await request(app).get(`/api/scans/${res.body.id}`).set('Authorization', alice);
+    const summary = (scan.body as Scan).summary!;
+    expect(scan.body.status).toBe('completed');
+
+    // Profile
+    const profile = summary.profile!;
+    expect(profile.frameworks.map((f) => f.name)).toEqual(['Node.js', 'Express']);
+    expect(profile.manifests.map((m) => m.path)).toEqual(['package-lock.json', 'package.json']);
+    expect(profile.sourceFiles.some((f) => f.path.startsWith('node_modules/'))).toBe(false);
+    expect(profile.ignored.byReason['ignored-dir']).toBe(2);
+    expect(profile.sensitivePaths).toEqual(
+      expect.arrayContaining([
+        { path: 'Dockerfile', category: 'dockerfile' },
+        { path: 'docker-compose.yml', category: 'compose' },
+      ]),
+    );
+
+    // Parse: 5 JS/TS sources, one intentionally broken.
+    expect(summary.filesParsed).toBe(4);
+    expect(summary.parseErrors).toBe(1);
+    expect(summary.parseErrorSamples).toEqual([
+      { path: 'src/legacy/broken.js', message: expect.any(String), line: 3, column: 9 },
+    ]);
   });
 });
 

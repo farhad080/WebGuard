@@ -1,0 +1,28 @@
+{
+  "name": "@webguard/analysis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.13",
+    "@babel/types": "^7.29.11",
+    "@webguard/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "vitest": "^2.1.8"
+  }
+}
