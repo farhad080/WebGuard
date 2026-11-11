@@ -39,7 +39,42 @@ protected routes as:
 Authorization: Bearer <token>
 ```
 
+## Data model
+
+```
+users 1──* projects 1──* scans 1──* findings
+                              └──* artifacts
+```
+
+| Table       | Purpose                                                          | Key columns                                                                                                                                            |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `users`     | Account owners                                                   | `email` (unique), `password_hash`                                                                                                                      |
+| `projects`  | A website codebase owned by a user                               | `user_id → users`, `name`                                                                                                                              |
+| `scans`     | One analysis run of a project                                    | `project_id → projects`, `status` (`queued`/`running`/`completed`/`failed`), `started_at`, `finished_at`, `summary_json`                               |
+| `findings`  | A detected vulnerability at a file/line                          | `scan_id → scans`, `detector_id`, `owasp_category`, `severity`, `confidence` (0–1), `file_path`, `line_start`, `line_end`, `snippet`, `fix_suggestion` |
+| `artifacts` | Files produced for a scan (uploaded ZIP, extracted tree, report) | `scan_id → scans`, `kind` (`raw_zip`/`extracted`/`report`), `storage_key`                                                                              |
+
+All foreign keys cascade on delete (deleting a project removes its scans, findings, and
+artifacts) and are indexed; `findings` also has a composite index on `(scan_id, severity)`.
+
+### Projects & scans API
+
+All routes require `Authorization: Bearer <token>`. Resources owned by another user return `404`.
+
+| Method | Path                      | Notes                                                                          |
+| ------ | ------------------------- | ------------------------------------------------------------------------------ |
+| POST   | `/api/projects`           | `{ name }` → `201` project                                                     |
+| GET    | `/api/projects`           | Current user's projects, newest first                                          |
+| GET    | `/api/projects/:id`       | One project                                                                    |
+| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                   |
+| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                    |
+| POST   | `/api/projects/:id/scans` | Creates a `queued` scan → `201`                                                |
+| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                              |
+| GET    | `/api/scans/:id`          | One scan with status and summary                                               |
+| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence` |
+
 ## Status
 
 - [x] 1. Project scaffold & tooling
 - [x] 2. Backend API & JWT authentication
+- [x] 3. Projects & scans data model + CRUD

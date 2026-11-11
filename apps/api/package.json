@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "node scripts/with-env.mjs tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@webguard/core": "*",
     "argon2": "^0.45.2",
     "express": "^4.21.2",
     "helmet": "^8.3.0",

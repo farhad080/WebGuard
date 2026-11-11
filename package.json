@@ -10,8 +10,10 @@
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "npm run build --workspace @webguard/core",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
+    "pretypecheck": "npm run build --workspace @webguard/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
