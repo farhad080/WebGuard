@@ -85,6 +85,7 @@ export { exampleTodoComment } from './detection/detectors/example-todo-comment.j
 export { sqlInjection } from './detection/detectors/a1-sql-injection.js';
 export { nosqlInjection } from './detection/detectors/a2-nosql-injection.js';
 export { ssti } from './detection/detectors/a3-ssti.js';
+export { xss } from './detection/detectors/a4-xss.js';
 
 // Taint tracing
 export {

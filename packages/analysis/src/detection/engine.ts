@@ -136,6 +136,7 @@ function validateFinding(
     // A detector can only report under its own id.
     detectorId: detector.id,
     owaspCategory: f.owaspCategory ?? detector.owaspCategory,
+    cwe: f.cwe ?? detector.cwe,
     severity,
     confidence: clampConfidence(f.confidence),
     filePath: f.filePath,

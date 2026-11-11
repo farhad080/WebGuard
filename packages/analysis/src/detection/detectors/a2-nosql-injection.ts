@@ -58,6 +58,7 @@ export const nosqlInjection = registerDetector({
   id: 'A2-nosql-injection',
   title: 'NoSQL injection',
   owaspCategory: CATEGORY,
+  cwe: 'CWE-943',
   technique: 'dataflow',
   explanation:
     'A database query selector is built from client-supplied data without forcing it to a ' +

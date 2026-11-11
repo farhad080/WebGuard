@@ -24,7 +24,11 @@ beforeAll(async () => {
   findings = dedupeFindings(result.findings);
 });
 
-const inFile = (path: string) => findings.filter((f) => f.filePath === path);
+// Scoped to the injection detectors: other detectors (e.g. A4 XSS) may legitimately flag
+// the same fixtures and are tested on their own.
+const INJECTION = /^A[123]-/;
+const inFile = (path: string) =>
+  findings.filter((f) => f.filePath === path && INJECTION.test(f.detectorId));
 const summary = (f: FindingDraft) => ({
   detectorId: f.detectorId,
   owaspCategory: f.owaspCategory,
@@ -136,7 +140,12 @@ describe('A3-ssti', () => {
 
 describe('overall', () => {
   it('produces exactly the expected findings for the fixture project (no false positives)', () => {
-    expect(findings.map((f) => `${f.detectorId} ${f.filePath}:${f.lineStart}`).sort()).toEqual([
+    expect(
+      findings
+        .filter((f) => INJECTION.test(f.detectorId))
+        .map((f) => `${f.detectorId} ${f.filePath}:${f.lineStart}`)
+        .sort(),
+    ).toEqual([
       'A1-sql-injection routes/sqli/login.ts:9',
       'A1-sql-injection routes/sqli/raw-concat.js:8',
       'A1-sql-injection routes/sqli/search.ts:9',

@@ -15,6 +15,17 @@ const HTTP_INPUT =
 const USER_PROFILE =
   /(^|\.)(user|users|currentUser|loggedInUser|authUser|profile|account|member|customer)\.(username|userName|name|displayName|fullName|firstName|lastName|email|bio|about|description|nickname|title|address)$/;
 
+const CLIENT_URL = new RegExp(
+  [
+    // location.search / window.location.hash / document.location.href ...
+    String.raw`(^|\.)location\.(search|hash|href|pathname)$`,
+    String.raw`^(window\.|document\.)?(document\.)?(URL|documentURI|referrer|baseURI)$`,
+    String.raw`^window\.name$`,
+    // Angular ActivatedRoute: this.route.snapshot.queryParams.q, route.paramMap, ...
+    String.raw`(^|\.)(route|activatedRoute|activeRoute)\.(snapshot\.)?(queryParams|params|queryParamMap|paramMap|fragment)(\.|$)`,
+  ].join('|'),
+);
+
 /**
  * Default source/sink tags.
  * Sources: reads of user-controlled request data (`req.body.x`, `req.query`, `req.headers[..]`).
@@ -36,6 +47,13 @@ export const DEFAULT_TAG_RULES: readonly TagRule[] = [
     tag: 'source:user-profile',
     description: 'Reads a user-controlled profile field (username, email, bio, ...)',
     match: (n) => n.type === 'MemberAccess' && !!n.name && USER_PROFILE.test(n.name),
+  },
+  {
+    // Browser-side input an attacker controls via a crafted link: URL query/fragment,
+    // Angular route params, referrer, window.name.
+    tag: 'source:client-url',
+    description: 'Reads attacker-controllable URL data in the browser (location, route params)',
+    match: (n) => n.type === 'MemberAccess' && !!n.name && CLIENT_URL.test(n.name),
   },
   {
     tag: 'sink:dom-html',

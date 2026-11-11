@@ -97,6 +97,7 @@ export const sqlInjection = registerDetector({
   id: 'A1-sql-injection',
   title: 'SQL injection',
   owaspCategory: CATEGORY,
+  cwe: 'CWE-89',
   technique: 'dataflow',
   explanation:
     'User-controlled input is concatenated or interpolated directly into a SQL query string. ' +

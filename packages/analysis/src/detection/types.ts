@@ -54,6 +54,8 @@ export interface RawFinding {
   /** Override the detector's default explanation / fix for this particular finding. */
   explanation?: string;
   fixSuggestion?: string;
+  /** Weakness id (e.g. "CWE-89"); defaults to the detector's. */
+  cwe?: string;
 }
 
 export interface Detector {
@@ -61,6 +63,12 @@ export interface Detector {
   id: string;
   title: string;
   owaspCategory: OwaspCategory;
+  /**
+   * Weakness id, e.g. "CWE-79". Findings are only correlated with others of the same weakness,
+   * which matters because OWASP 2025 groups very different weaknesses (SQLi, XSS, ...) under one
+   * category.
+   */
+  cwe?: string;
   technique: Technique;
   /** Default explanation of the risk and default secure fix, used when a finding doesn't override. */
   explanation: string;

@@ -38,6 +38,7 @@ export interface SourceLocation {
 export type NodeTag =
   | 'source:http-input'
   | 'source:user-profile'
+  | 'source:client-url'
   | 'sink:dom-html'
   | 'sink:code-exec'
   | 'sink:command-exec'

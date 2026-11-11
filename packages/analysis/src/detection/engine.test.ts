@@ -285,6 +285,17 @@ describe('dedupeFindings', () => {
     ]);
   });
 
+  it('keeps different weaknesses (CWE) in the same OWASP category separate', () => {
+    const out = dedupeFindings([
+      finding({ detectorId: 'nosqli', cwe: 'CWE-943' }),
+      finding({ detectorId: 'xss', cwe: 'CWE-79', severity: 'high', confidence: 0.4 }),
+    ]);
+    expect(out.map((f) => [f.detectorId, f.confidence])).toEqual([
+      ['nosqli', 0.6],
+      ['xss', 0.4],
+    ]);
+  });
+
   it('keeps different OWASP categories and different lines separate', () => {
     const out = dedupeFindings([
       finding({ detectorId: 'sqli' }),

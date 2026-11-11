@@ -15,6 +15,7 @@ export const exampleTodoComment = registerDetector({
   id: 'example-todo-comment',
   title: 'Security TODO left in code',
   owaspCategory: 'A06:2025-Insecure Design',
+  cwe: 'CWE-546',
   technique: 'pattern',
   explanation:
     'A "TODO SECURITY" comment marks a known, unresolved security gap. It is a reminder, ' +

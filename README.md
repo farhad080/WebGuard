@@ -134,10 +134,12 @@ report and UI filtering.
 
 1. Findings with the same `(detectorId, filePath, lineStart)` collapse into one (strongest kept,
    evidence merged).
-2. Findings from different detectors on the same file, line, **and OWASP category** merge into
-   one correlated finding. It keeps the highest severity, combines confidence with noisy-OR
-   (`1 − Π(1 − cᵢ)`, so agreement raises confidence), and lists every detector in
-   `contributingDetectors`. Different categories on the same line stay separate findings.
+2. Findings from different detectors on the same file, line, **OWASP category, and weakness**
+   (the detector's `cwe`, e.g. `CWE-89`) merge into one correlated finding. It keeps the highest
+   severity, combines confidence with noisy-OR (`1 − Π(1 − cᵢ)`, so agreement raises
+   confidence), and lists every detector in `contributingDetectors`. Different categories or
+   weaknesses on the same line stay separate. This matters in OWASP 2025, where SQLi, NoSQLi,
+   SSTI, and XSS all fall under A05 Injection but need different fixes.
 
 **Self-registering registry.** A detector module calls `registerDetector({...})` and is
 imported once from `detectors/index.ts`. The engine never changes. `example-todo-comment`
@@ -147,11 +149,12 @@ imported once from `detectors/index.ts`. The engine never changes. `example-todo
 
 Categories follow the **OWASP Top 10:2025**. Confidence bands: high ≥ 0.8, medium ≥ 0.5.
 
-| ID                   | Detects                             | OWASP                | Technique | Juice Shop challenges |
-| -------------------- | ----------------------------------- | -------------------- | --------- | --------------------- |
-| `A1-sql-injection`   | SQL injection                       | A05:2025 – Injection | dataflow  | #1–#7                 |
-| `A2-nosql-injection` | NoSQL operator / `$where` injection | A05:2025 – Injection | dataflow  | #8–#10                |
-| `A3-ssti`            | SSTI / dynamic code evaluation      | A05:2025 – Injection | dataflow  | #11                   |
+| ID                   | Detects                                        | OWASP                         | Technique      | Juice Shop challenges |
+| -------------------- | ---------------------------------------------- | ----------------------------- | -------------- | --------------------- |
+| `A1-sql-injection`   | SQL injection                                  | A05:2025 – Injection          | dataflow       | #1–#7                 |
+| `A2-nosql-injection` | NoSQL operator / `$where` injection            | A05:2025 – Injection          | dataflow       | #8–#10                |
+| `A3-ssti`            | SSTI / dynamic code evaluation                 | A05:2025 – Injection          | dataflow       | #11                   |
+| `A4-xss`             | Cross-site scripting: DOM / reflected / stored | A05:2025 – Injection (CWE-79) | dataflow + AST | #26–#30               |
 
 **A1 — SQL injection.** Sinks: `sequelize.query`, `knex.raw`, Prisma `$queryRawUnsafe` /
 `$executeRawUnsafe`, `db.run/all/get/each/exec`, and `*.query` / `*.execute` when the text looks
@@ -178,12 +181,35 @@ second-order input). **Critical**: 0.95 for request input, 0.85 for a profile fi
 a call. `eval` over an untraceable dynamic value: high, 0.4 (low). Not flagged: constant
 `eval('2+2')`, `vm` sandboxes and file-based templates without user input, `setTimeout(fn)`.
 
+**A4 — Cross-site scripting.** All findings are **high** severity, and each one is classified
+in its evidence and explanation:
+
+- **DOM**: browser code writes URL-controlled data (`location.*`, Angular route params) to an
+  HTML sink: `innerHTML`/`outerHTML =`, `document.write`, `insertAdjacentHTML`, `$(…).html()`,
+  Angular `bypassSecurityTrust*`, React `dangerouslySetInnerHTML`. Juice Shop #26/#27: search
+  param → `bypassSecurityTrustHtml` → `[innerHTML]`.
+- **Reflected**: request input echoed by `res.send/write/end` as HTML, or URL data that
+  round-trips through a service response (`.subscribe(res => …)`) into an HTML sink. Juice Shop
+  #28: track-order id.
+- **Stored**: request input saved unsanitised to a renderable model field (`description`,
+  `email`, `comment`, …) via `create/update/insert…`, correlated by field name with the place
+  it renders unsafely, plus the render side itself. Juice Shop #29: product description via the
+  API. #30: an email that is validated only in the browser and rendered in the admin list.
+
+Confidence: **0.85** for proven direct taint, **0.8** for a stored write with a matching unsafe
+render site (0.4 if none exists in the project), **0.6** through an unknown call, and
+**0.5 (medium)** for an HTML sink with a plausible but unproven source. Not flagged:
+auto-escaping bindings (`{{ value }}`, React `{value}`, Angular `[innerHTML]` without a bypass,
+since Angular sanitizes it), `textContent`, `DOMPurify.sanitize` / sanitize-html / escape-html /
+Angular `sanitizer.sanitize()`, JSON responses, numeric output, and `res.send(render(locals))`.
+
 **Taint tracing** (`traceTaint` in `packages/analysis`) is intra-procedural. It follows
 variables through assignments, reassignments, destructuring, `for…of`, and closures, plus
-string building (`+`, templates, `?:`, `||`/`??`, string methods). Numeric casts, comparisons,
-and `.length` stop taint. Detectors can add sanitizers or treat scalar coercion as safe. Not
-followed: calls into other functions or files, object mutation and aliasing, and per-branch
-control flow.
+class fields (`this.x` assigned in any method), callback parameters (`.subscribe(v => …)`,
+`.then(v => …)`), and string building (`+`, templates, `?:`, `||`/`??`, string methods).
+Numeric casts, comparisons, `.length`, and DB lookups (`findByPk(id)` returns stored data, not
+`id`) stop taint. Detectors can add sanitizers or treat scalar coercion as safe. Not followed:
+calls into other functions or files, object mutation and aliasing, and per-branch control flow.
 
 ## Authentication
 
@@ -246,3 +272,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 5. Project profiler + parser/AST layer
 - [x] 6. Detection engine core + detector registry
 - [x] 7. Injection detectors (SQLi, NoSQLi, SSTI)
+- [x] 8. Cross-Site Scripting detector

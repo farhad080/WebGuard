@@ -19,8 +19,8 @@ function unique(values: Iterable<string>): string[] {
  *
  * 1. **De-duplicate:** findings with the same (detectorId, filePath, lineStart) collapse into
  *    one, keeping the strongest and merging evidence.
- * 2. **Correlate:** findings from *different* detectors on the same (filePath, lineStart) and
- *    OWASP category merge into one result. It keeps the highest severity, combines confidence
+ * 2. **Correlate:** findings from *different* detectors on the same (filePath, lineStart),
+ *    OWASP category, and weakness (CWE, when detectors declare one) merge into one result. It keeps the highest severity, combines confidence
  *    (independent agreement → higher confidence), and lists every contributing detector.
  *    Different categories on the same line (e.g. a hardcoded secret and an injection) stay
  *    separate: they are distinct problems with distinct fixes.
@@ -45,7 +45,7 @@ export function dedupeFindings(findings: readonly ValidatedFinding[]): FindingDr
   const groups = new Map<string, Array<{ best: ValidatedFinding; evidence: string[] }>>();
   for (const entry of perDetector.values()) {
     const f = entry.best;
-    const key = `${f.filePath}\u0000${f.lineStart}\u0000${f.owaspCategory}`;
+    const key = `${f.filePath}\u0000${f.lineStart}\u0000${f.owaspCategory}\u0000${f.cwe ?? ''}`;
     const group = groups.get(key);
     if (group) group.push(entry);
     else groups.set(key, [entry]);

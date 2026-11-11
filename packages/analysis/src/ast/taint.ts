@@ -39,6 +39,11 @@ export interface TaintFlow {
   via: string[];
   /** True when the flow passes through an unknown function call. */
   throughCall: boolean;
+  /**
+   * True when the flow passes through a callback parameter (`.subscribe(v => …)`,
+   * `.then(v => …)`), e.g. data that round-tripped through an HTTP/service call.
+   */
+  throughCallback: boolean;
 }
 
 export interface TaintTrace {
@@ -266,7 +271,103 @@ interface WorkItem {
   node: AstNode;
   via: string[];
   throughCall: boolean;
+  throughCallback: boolean;
   hops: number;
+}
+
+/** Calls whose result is their input, unchanged in substance (taint passes, directly). */
+const IDENTITY_CALLS = [
+  'URLSearchParams',
+  'decodeURIComponent',
+  'decodeURI',
+  'unescape',
+  'atob',
+  'String',
+  '*.bypassSecurityTrustHtml',
+  '*.bypassSecurityTrustScript',
+  '*.bypassSecurityTrustUrl',
+  '*.bypassSecurityTrustResourceUrl',
+  '*.bypassSecurityTrustStyle',
+];
+
+/** ORM/DB reads whose result is stored data (its arguments only select which rows). */
+const DATA_LOOKUP_METHODS = new Set([
+  'findByPk', 'findById', 'findOne', 'findAll', 'findMany', 'findFirst', 'findUnique',
+  'findAndCountAll', 'findOrCreate', 'findOneOrFail', 'findByIdAndUpdate',
+]); // prettier-ignore
+
+/**
+ * Methods that hand the value they produce to their callback's first parameter:
+ * `obs.subscribe(v => …)`, `promise.then(v => …)`, `arr.forEach(el => …)`.
+ */
+const CALLBACK_VALUE_METHODS = new Set([
+  'subscribe',
+  'then',
+  'forEach',
+  'map',
+  'flatMap',
+  'filter',
+  'find',
+  'some',
+  'every',
+]);
+
+/** If `fn` is a callback like `x.subscribe(fn)`, the expression whose value `fn` receives. */
+function callbackProducer(fn: AstNode, paramName: string): AstNode | undefined {
+  const call = fn.parent;
+  if (call?.type !== 'Call' || !call.arguments?.includes(fn)) return undefined;
+  const callee = call.callee;
+  if (callee?.type !== 'MemberAccess' || !CALLBACK_VALUE_METHODS.has(callee.property ?? '')) {
+    return undefined;
+  }
+  return parameterNames(fn)[0] === paramName ? callee.object : undefined;
+}
+
+const classFieldCache = new WeakMap<AstNode, Map<string, AstNode[]>>();
+
+/**
+ * Values assigned to `this.<field>` anywhere in the enclosing class (any method, plus class
+ * property initializers). Methods can run in any order, so all assignments count.
+ */
+function classFieldValues(member: AstNode): AstNode[] | undefined {
+  let cls: AstNode | undefined;
+  for (let p = member.parent; p; p = p.parent) {
+    if (p.rawType === 'ClassBody') {
+      cls = p;
+      break;
+    }
+  }
+  if (!cls || !member.property) return undefined;
+  let fields = classFieldCache.get(cls);
+  if (!fields) {
+    fields = new Map();
+    classFieldCache.set(cls, fields);
+    const add = (name: string, value: AstNode) => {
+      const list = fields!.get(name);
+      if (list) list.push(value);
+      else fields!.set(name, [value]);
+    };
+    for (const n of walk(cls)) {
+      if (
+        n.type === 'Assignment' &&
+        n.right &&
+        n.left?.type === 'MemberAccess' &&
+        n.left.object?.rawType === 'ThisExpression' &&
+        n.left.property
+      ) {
+        add(n.left.property, n.right);
+      } else if (
+        (n.rawType === 'ClassProperty' || n.rawType === 'ClassPrivateProperty') &&
+        n.parent === cls
+      ) {
+        const raw = n.raw as { key?: { name?: string; id?: { name?: string } }; value?: unknown };
+        const name = raw.key?.name ?? raw.key?.id?.name;
+        const value = raw.value ? n.children.at(-1) : undefined;
+        if (name && value && value.raw === raw.value) add(name, value);
+      }
+    }
+  }
+  return fields.get(member.property);
 }
 
 export function traceTaint(expr: AstNode, options: TaintOptions = {}): TaintTrace {
@@ -281,21 +382,23 @@ export function traceTaint(expr: AstNode, options: TaintOptions = {}): TaintTrac
   const flows: TaintFlow[] = [];
   let dynamic = false;
   const seen = new Set<AstNode>();
-  const work: WorkItem[] = [{ node: expr, via: [], throughCall: false, hops: 0 }];
+  const work: WorkItem[] = [
+    { node: expr, via: [], throughCall: false, throughCallback: false, hops: 0 },
+  ];
 
   while (work.length > 0) {
     const item = work.pop()!;
-    const { node, via, throughCall, hops } = item;
+    const { node, via, throughCall, throughCallback, hops } = item;
     if (seen.has(node)) continue;
     seen.add(node);
     const next = (child: AstNode | undefined, extra: Partial<WorkItem> = {}) => {
-      if (child) work.push({ node: child, via, throughCall, hops, ...extra });
+      if (child) work.push({ node: child, via, throughCall, throughCallback, hops, ...extra });
     };
 
     // `.length` is a number even on tainted data (and `req.body.x.length` is itself tagged).
     if (node.type === 'MemberAccess' && node.property === 'length') continue;
     if (isSource(node)) {
-      flows.push({ source: node, via, throughCall });
+      flows.push({ source: node, via, throughCall, throughCallback });
       continue;
     }
     if (TRANSPARENT_RAW.has(node.rawType)) {
@@ -341,20 +444,46 @@ export function traceTaint(expr: AstNode, options: TaintOptions = {}): TaintTrac
           }
         } else {
           dynamic = true; // parameter, import, or global: origin unknown in this file
+          // A callback parameter receives the value of whatever it subscribes to.
+          const producer =
+            resolution.kind === 'parameter'
+              ? callbackProducer(resolution.fn, node.name!)
+              : undefined;
+          if (producer && hops < maxHops) {
+            next(producer, { via: [...via, node.name!], hops: hops + 1, throughCallback: true });
+          }
         }
         continue;
       }
 
-      case 'MemberAccess':
+      case 'MemberAccess': {
         if (looksConstant(node)) continue;
         if (node.property === 'length') continue; // a number
+        // `this.field`: follow assignments to that field anywhere in the class.
+        if (node.object?.rawType === 'ThisExpression') {
+          const values = classFieldValues(node);
+          if (values && values.length > 0 && hops < maxHops) {
+            for (const v of values) next(v, { via: [...via, node.name!], hops: hops + 1 });
+            continue;
+          }
+        }
         next(node.object);
         continue;
+      }
 
       case 'Call': {
         if (sanitizers.some((p) => matchesName(node.name, p))) continue;
         dynamic = true;
+        if (IDENTITY_CALLS.some((p) => matchesName(node.name, p))) {
+          node.arguments?.forEach((a) => next(a));
+          continue;
+        }
         const callee = node.callee;
+        // `Model.findByPk(req.params.id)` returns a database row, not the request value:
+        // lookup arguments select data, they don't flow into it.
+        if (callee?.type === 'MemberAccess' && DATA_LOOKUP_METHODS.has(callee.property ?? '')) {
+          continue;
+        }
         const method = callee?.type === 'MemberAccess' ? callee.property : undefined;
         if (callee?.type === 'MemberAccess' && method && STRING_METHODS.has(method)) {
           if (options.coercionSanitizes && method === 'toString') continue;

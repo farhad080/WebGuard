@@ -9,7 +9,7 @@ import {
   exampleTodoComment,
   type Detector,
 } from '@webguard/analysis';
-import type { OwaspCategory, Scan, ScanSummary, Severity } from '@webguard/core';
+import type { Finding, OwaspCategory, Scan, ScanSummary, Severity } from '@webguard/core';
 import type { Worker } from 'bullmq';
 import request from 'supertest';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -169,7 +169,13 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
       skippedEntries: 0,
       filesParsed: 2, // src/app.js, src/lib/util.js
       parseErrors: 0,
-      detectors: ['example-todo-comment', 'A1-sql-injection', 'A2-nosql-injection', 'A3-ssti'],
+      detectors: [
+        'example-todo-comment',
+        'A1-sql-injection',
+        'A2-nosql-injection',
+        'A3-ssti',
+        'A4-xss',
+      ],
       findingsTotal: 0,
       detectorErrors: [],
     });
@@ -277,9 +283,15 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
 
     const res = await request(app).get(`/api/scans/${scanId}/findings`).set('Authorization', alice);
     expect(res.status).toBe(200);
-    // Ordered by file, then line. users.js:8 is a real SQL injection (A1); line 13 is
-    // parameterized and correctly not reported.
+    // Ordered by file, then line. widget.js:2 renders `user.name` via innerHTML (A4, stored
+    // XSS); users.js:8 is a real SQL injection (A1); users.js:13 is parameterized and not reported.
     expect(res.body).toEqual([
+      expect.objectContaining({
+        detectorId: 'A4-xss',
+        severity: 'high',
+        filePath: 'src/client/widget.js',
+        lineStart: 2,
+      }),
       expect.objectContaining({
         detectorId: 'A1-sql-injection',
         severity: 'critical',
@@ -384,48 +396,49 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
       'A1-sql-injection',
       'A2-nosql-injection',
       'A3-ssti',
+      'A4-xss',
     ]);
-    // The healthy detectors' findings are still persisted (TODO + SQLi in users.js).
-    expect(await prisma.finding.count({ where: { scanId } })).toBe(2);
+    // The healthy detectors' findings are still persisted (TODO, SQLi in users.js, XSS in widget.js).
+    expect(await prisma.finding.count({ where: { scanId } })).toBe(3);
   });
 });
 
+/** Uploads one of the analysis package's fixture projects and runs the worker on it. */
+async function scanFixture(name: string): Promise<{ scanId: string; findings: Finding[] }> {
+  const root = fileURLToPath(
+    new URL(`../../../../packages/analysis/test/fixtures/${name}`, import.meta.url),
+  );
+  const files = (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => path.join(e.parentPath, e.name));
+  const zip = buildZip(
+    await Promise.all(
+      files.map(async (abs) => ({
+        name: path.relative(root, abs).split(path.sep).join('/'),
+        data: await readFile(abs),
+      })),
+    ),
+  );
+  const res = await upload(alice, (req) =>
+    req.attach('file', zip, { filename: `${name}.zip`, contentType: 'application/zip' }),
+  );
+  expect(res.status).toBe(201);
+  await processScan(res.body.id);
+  const all = await request(app)
+    .get(`/api/scans/${res.body.id}/findings`)
+    .set('Authorization', alice);
+  expect(all.status).toBe(200);
+  return { scanId: res.body.id, findings: all.body as Finding[] };
+}
+
+const line = (f: Finding) =>
+  `${f.detectorId} ${f.severity} ${f.confidence} ${f.filePath}:${f.lineStart}`;
+
 describe('injection detectors through the full pipeline', () => {
   it('persists correctly categorized and scored SQLi / NoSQLi / SSTI findings', async () => {
-    const root = fileURLToPath(
-      new URL('../../../../packages/analysis/test/fixtures/injection', import.meta.url),
-    );
-    const files = (await readdir(root, { recursive: true, withFileTypes: true }))
-      .filter((e) => e.isFile())
-      .map((e) => path.join(e.parentPath, e.name));
-    const zip = buildZip(
-      await Promise.all(
-        files.map(async (abs) => ({
-          name: path.relative(root, abs).split(path.sep).join('/'),
-          data: await readFile(abs),
-        })),
-      ),
-    );
-    const res = await upload(alice, (req) =>
-      req.attach('file', zip, { filename: 'injection.zip', contentType: 'application/zip' }),
-    );
-    expect(res.status).toBe(201);
-    await processScan(res.body.id);
-
-    const all = await request(app)
-      .get(`/api/scans/${res.body.id}/findings`)
-      .set('Authorization', alice);
-    expect(
-      all.body.map(
-        (f: {
-          detectorId: string;
-          severity: string;
-          confidence: number;
-          filePath: string;
-          lineStart: number;
-        }) => `${f.detectorId} ${f.severity} ${f.confidence} ${f.filePath}:${f.lineStart}`,
-      ),
-    ).toEqual([
+    const { scanId, findings } = await scanFixture('injection');
+    const injection = findings.filter((f) => /^A[123]-/.test(f.detectorId));
+    expect(injection.map(line)).toEqual([
       'A2-nosql-injection critical 0.8 routes/nosql/showProductReviews.ts:8',
       'A2-nosql-injection high 0.6 routes/nosql/updateProductReviews.ts:7',
       'A2-nosql-injection high 0.6 routes/nosql/whole-body.js:6',
@@ -437,25 +450,52 @@ describe('injection detectors through the full pipeline', () => {
       'A3-ssti critical 0.85 routes/ssti/userProfile.ts:14',
       'A3-ssti critical 0.85 routes/ssti/userProfile.ts:18',
     ]);
-    expect(new Set(all.body.map((f: { owaspCategory: string }) => f.owaspCategory))).toEqual(
-      new Set(['A05:2025-Injection']),
-    );
+    expect(new Set(findings.map((f) => f.owaspCategory))).toEqual(new Set(['A05:2025-Injection']));
+    // A4 additionally reports the unsanitised review `message` writes, at low confidence
+    // (nothing in this project renders them as HTML).
+    expect(findings.filter((f) => f.detectorId === 'A4-xss').map(line)).toEqual([
+      'A4-xss high 0.4 routes/nosql/safe.ts:6',
+      'A4-xss high 0.4 routes/nosql/updateProductReviews.ts:7',
+    ]);
 
     // High-confidence critical findings via the API filters.
     const critical = await request(app)
-      .get(`/api/scans/${res.body.id}/findings`)
+      .get(`/api/scans/${scanId}/findings`)
       .query({ severity: 'critical', minConfidence: '0.85' })
       .set('Authorization', alice);
     expect(critical.body).toHaveLength(6);
 
-    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: res.body.id } });
+    const scan = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
     expect((scan.summaryJson as ScanSummary).findingsBySeverity).toEqual({
       critical: 7,
-      high: 3,
+      high: 5,
       medium: 0,
       low: 0,
       info: 0,
     });
+  });
+});
+
+describe('XSS detector through the full pipeline', () => {
+  it('persists DOM / reflected / stored XSS findings as high severity, and none for safe code', async () => {
+    const { findings } = await scanFixture('xss');
+    const xss = findings.filter((f) => f.detectorId === 'A4-xss');
+    const cls = (f: Finding) => /^(DOM|Reflected|Stored) XSS/.exec(f.evidence[0] ?? '')?.[1];
+    expect(xss.map((f) => `${cls(f)} ${f.severity} ${f.filePath}:${f.lineStart}`)).toEqual([
+      'Stored high frontend/administration.component.ts:17',
+      'DOM high frontend/Comment.jsx:4',
+      'DOM high frontend/search-box.component.ts:19',
+      'Stored high frontend/search-result.component.ts:19',
+      'DOM high frontend/search-result.component.ts:29',
+      'Reflected high frontend/track-result.component.ts:18',
+      'Stored high server/routes/register.ts:8',
+      'Reflected high server/routes/trackOrder.js:4',
+      'Reflected high server/routes/trackOrder.js:11',
+      'Stored high server/routes/updateProduct.ts:9',
+    ]);
+    expect(findings).toHaveLength(xss.length); // no other detector fires on this fixture
+    expect(xss.every((f) => f.owaspCategory === 'A05:2025-Injection')).toBe(true);
+    expect(xss.find((f) => f.filePath.includes('safe'))).toBeUndefined();
   });
 });
 

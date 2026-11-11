@@ -1,0 +1,8 @@
+<div class="heading">
+  <span>Search results for</span>
+  <span id="searchValue" [innerHTML]="searchValue"></span>
+</div>
+<mat-card *ngFor="let item of tableData">
+  <div class="item-name">{{ item.name }}</div>
+  <div class="item-description" [innerHTML]="item.description"></div>
+</mat-card>

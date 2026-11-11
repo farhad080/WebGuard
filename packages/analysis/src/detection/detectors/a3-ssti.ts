@@ -65,6 +65,7 @@ export const ssti = registerDetector({
   id: 'A3-ssti',
   title: 'Server-side template injection / code evaluation',
   owaspCategory: CATEGORY,
+  cwe: 'CWE-94',
   technique: 'dataflow',
   explanation:
     'User-controlled text is evaluated as code on the server (eval, Function, vm, or a ' +

@@ -96,6 +96,31 @@ describe('traceTaint', () => {
     expect(trace('let x = "safe"; sink(x); x = req.body.evil;').tainted).toBe(false);
   });
 
+  it('follows this.field assignments across methods of a class', () => {
+    const t = trace(`
+      class C {
+        value = '';
+        init() { this.value = req.query.q; }
+        render() { sink(this.value); }
+      }
+    `);
+    expect(t.tainted).toBe(true);
+    expect(t.flows[0]!.via).toContain('this.value');
+  });
+
+  it('follows a callback parameter back to the value it receives', () => {
+    const t = trace('fetchOrder(req.query.id).then((order) => sink(order.html))');
+    expect(t.tainted).toBe(true);
+    expect(t.flows[0]).toMatchObject({ throughCallback: true, throughCall: true });
+    // Only the first parameter receives the value.
+    expect(trace('items.forEach((item, i) => sink(i))').tainted).toBe(false);
+  });
+
+  it('passes taint through identity calls like decodeURIComponent and bypassSecurityTrustHtml', () => {
+    expect(trace('sink(decodeURIComponent(req.query.q))').direct).toBe(true);
+    expect(trace('sink(this.s.bypassSecurityTrustHtml(req.query.q))').direct).toBe(true);
+  });
+
   it('terminates on self-referencing assignments', () => {
     expect(trace('let s = ""; for (;;) { s = s + s; } sink(s)').tainted).toBe(false);
   });
