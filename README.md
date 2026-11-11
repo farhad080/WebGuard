@@ -149,12 +149,14 @@ imported once from `detectors/index.ts`. The engine never changes. `example-todo
 
 Categories follow the **OWASP Top 10:2025**. Confidence bands: high ≥ 0.8, medium ≥ 0.5.
 
-| ID                   | Detects                                        | OWASP                         | Technique      | Juice Shop challenges |
-| -------------------- | ---------------------------------------------- | ----------------------------- | -------------- | --------------------- |
-| `A1-sql-injection`   | SQL injection                                  | A05:2025 – Injection          | dataflow       | #1–#7                 |
-| `A2-nosql-injection` | NoSQL operator / `$where` injection            | A05:2025 – Injection          | dataflow       | #8–#10                |
-| `A3-ssti`            | SSTI / dynamic code evaluation                 | A05:2025 – Injection          | dataflow       | #11                   |
-| `A4-xss`             | Cross-site scripting: DOM / reflected / stored | A05:2025 – Injection (CWE-79) | dataflow + AST | #26–#30               |
+| ID                     | Detects                                                                           | OWASP                                               | Technique      | Juice Shop challenges |
+| ---------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- | -------------- | --------------------- |
+| `A1-sql-injection`     | SQL injection                                                                     | A05:2025 – Injection                                | dataflow       | #1–#7                 |
+| `A2-nosql-injection`   | NoSQL operator / `$where` injection                                               | A05:2025 – Injection                                | dataflow       | #8–#10                |
+| `A3-ssti`              | SSTI / dynamic code evaluation                                                    | A05:2025 – Injection                                | dataflow       | #11                   |
+| `A4-xss`               | Cross-site scripting: DOM / reflected / stored                                    | A05:2025 – Injection (CWE-79)                       | dataflow + AST | #26–#30               |
+| `A5-hardcoded-secrets` | Hard-coded secrets (keys, tokens, passwords)                                      | A04:2025 – Cryptographic Failures (CWE-798)         | pattern        | #14                   |
+| `A6-weak-crypto`       | Weak crypto: broken algorithms, unsalted password hashing, encoding-as-encryption | A04:2025 – Cryptographic Failures (CWE-327/916/261) | AST + pattern  | #39, #40              |
 
 **A1 — SQL injection.** Sinks: `sequelize.query`, `knex.raw`, Prisma `$queryRawUnsafe` /
 `$executeRawUnsafe`, `db.run/all/get/each/exec`, and `*.query` / `*.execute` when the text looks
@@ -202,6 +204,46 @@ render site (0.4 if none exists in the project), **0.6** through an unknown call
 auto-escaping bindings (`{{ value }}`, React `{value}`, Angular `[innerHTML]` without a bypass,
 since Angular sanitizes it), `textContent`, `DOMPurify.sanitize` / sanitize-html / escape-html /
 Angular `sanitizer.sanitize()`, JSON responses, numeric output, and `res.send(render(locals))`.
+
+**A5 — Hardcoded secrets.** Scans every profiled text file plus committed `.env*` / key files
+(not tests, fixtures, mocks, or lockfiles) for:
+
+- known key formats: AWS access key IDs and secret keys, Google API keys, Slack tokens and
+  webhooks, GitHub / npm / Stripe / SendGrid tokens, JWTs, PEM private keys, and passwords in
+  connection URLs
+- credential assignments with a literal (`password = '…'`, `{ apiKey: '…' }`, class fields,
+  `KEY=value` lines) and literal keys passed to `createHmac`, `createCipheriv`,
+  `jwt.sign/verify`, `cookieParser`
+- high-entropy strings: Shannon entropy ≥ 4.5 bits/char (hex ≥ 3.5), length ≥ 20, all tunable
+  via `createSecretsDetector()`
+
+**Critical** when the file is client-side (served/static dir, front-end source, component files,
+or Angular/React/Vue imports), because the secret ships to every browser. The Juice Shop #14
+testing password in the Angular login component is this case. Otherwise **high**. Confidence:
+0.95 private keys, ~0.9 vendor formats, 0.85 literal crypto/JWT keys, 0.75 credential
+assignments, 0.45 entropy-only. Not flagged: placeholders (`changeme`, `xxx`, `your-key-here`,
+`example`, `${VAR}`), `process.env`, public/publishable keys, OAuth client IDs, i18n keys, prose,
+URLs, file paths, and UUID / hash-shaped strings outside a credential context. **Values are
+redacted** in evidence and snippets (`AKIA…[redacted, 20 chars]`; PEM bodies are elided). The
+secrets test fixture is generated at test time from split strings, so no complete
+provider-format token is committed.
+
+**A6 — Weak cryptography.**
+
+- **Password hashing** with a fast, unsalted hash (`createHash` with any algorithm, `md5()`,
+  `CryptoJS.MD5`, …) when the input traces to a password-like value. The trace covers the same
+  function and, one level up, the call sites of the hashing helper in files that import it.
+  **High.** Juice Shop #39: `security.hash(req.body.password)` → MD5.
+- **Broken ciphers**: `createCipher()`, DES / 3DES / RC4 / RC2 / Blowfish, ECB mode, CryptoJS
+  DES/RC4/ECB. **High.**
+- **Encoding as encryption**: base64 / hex / z85 / rot13 / `btoa` / `atob` inside `encrypt` /
+  `decrypt` / `cipher` / `coupon` functions or assigned to `encrypted*`. **Medium.** Juice Shop
+  #40: z85 "encrypted" coupons.
+- **Other languages**: a pattern rule for `hashlib.md5`, `MessageDigest.getInstance("MD5")`, and
+  PHP `md5($…)` on password-handling lines. **High.**
+- MD5/SHA-1 off the secret path: checksums, ETags, cache keys, and file digests are dropped;
+  other uses are reported as **low** (0.3). bcrypt, argon2, scrypt, and pbkdf2 are never
+  flagged.
 
 **Taint tracing** (`traceTaint` in `packages/analysis`) is intra-procedural. It follows
 variables through assignments, reassignments, destructuring, `for…of`, and closures, plus
@@ -273,3 +315,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 6. Detection engine core + detector registry
 - [x] 7. Injection detectors (SQLi, NoSQLi, SSTI)
 - [x] 8. Cross-Site Scripting detector
+- [x] 9. Secrets & weak-crypto detectors

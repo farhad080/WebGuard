@@ -121,6 +121,18 @@ export const nosqlInjection = registerDetector({
         let reported = false;
         for (const selector of resolveValues(selectorArg)) {
           if (reported) break;
+          // `{ where: {...} }` is SQL-ORM options (Sequelize/TypeORM), not a Mongo selector:
+          // those bind values and use Symbol operators, so JSON objects can't inject.
+          if (
+            selector.type === 'Object' &&
+            selector.children.some(
+              (p) =>
+                p.type === 'Property' &&
+                (p.raw as { key?: { name?: string } }).key?.name === 'where',
+            )
+          ) {
+            continue;
+          }
           if (selector.type === 'Object') {
             for (const prop of selector.children) {
               if (prop.type !== 'Property') continue;

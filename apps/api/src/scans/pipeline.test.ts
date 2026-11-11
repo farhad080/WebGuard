@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,10 @@ import type { Worker } from 'bullmq';
 import request from 'supertest';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createUserWithToken, resetDatabase } from '../../test/helpers.js';
+import {
+  FAKE,
+  materializeSecretsProject,
+} from '../../../../packages/analysis/test/secrets-project.js';
 import { buildZip } from '../../test/zip-writer.js';
 import { createApp } from '../app.js';
 import { prisma } from '../db.js';
@@ -171,6 +175,8 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
       parseErrors: 0,
       detectors: [
         'example-todo-comment',
+        'A5-hardcoded-secrets',
+        'A6-weak-crypto',
         'A1-sql-injection',
         'A2-nosql-injection',
         'A3-ssti',
@@ -389,9 +395,11 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
     expect(summary.detectorErrors).toEqual([
       { detectorId: 'broken-detector', message: 'threw: detector bug' },
     ]);
-    // Stage order: pattern, then ast (the broken one), then the dataflow detectors.
+    // Stage order: pattern, then ast (A6, then the broken one), then the dataflow detectors.
     expect(summary.detectors).toEqual([
       'example-todo-comment',
+      'A5-hardcoded-secrets',
+      'A6-weak-crypto',
       'broken-detector',
       'A1-sql-injection',
       'A2-nosql-injection',
@@ -405,9 +413,17 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
 
 /** Uploads one of the analysis package's fixture projects and runs the worker on it. */
 async function scanFixture(name: string): Promise<{ scanId: string; findings: Finding[] }> {
-  const root = fileURLToPath(
-    new URL(`../../../../packages/analysis/test/fixtures/${name}`, import.meta.url),
+  return scanDirectory(
+    fileURLToPath(new URL(`../../../../packages/analysis/test/fixtures/${name}`, import.meta.url)),
+    name,
   );
+}
+
+/** Zips a directory, uploads it, runs the worker, and returns the API's findings. */
+async function scanDirectory(
+  root: string,
+  name: string,
+): Promise<{ scanId: string; findings: Finding[] }> {
   const files = (await readdir(root, { recursive: true, withFileTypes: true }))
     .filter((e) => e.isFile())
     .map((e) => path.join(e.parentPath, e.name));
@@ -565,5 +581,58 @@ describe('processScan limits', () => {
     await processScan(scanId);
     const second = await prisma.scan.findUniqueOrThrow({ where: { id: scanId } });
     expect(second).toEqual(first);
+  });
+});
+
+describe('secrets & weak-crypto detectors through the full pipeline', () => {
+  it('persists redacted secret findings with client-bundle severity', async () => {
+    const root = await materializeSecretsProject();
+    try {
+      const { findings } = await scanDirectory(root, 'secrets');
+      const secrets = findings.filter((f) => f.detectorId === 'A5-hardcoded-secrets');
+      expect(secrets.map((f) => `${f.severity} ${f.filePath}:${f.lineStart}`)).toEqual([
+        'high config/.env.production:1',
+        'high config/.env.production:3',
+        'critical frontend/src/app/login/login.component.ts:6',
+        'critical frontend/src/app/upload/aws-upload.service.ts:5',
+        'critical public/js/chat-widget.js:1',
+        'high server/config/aws.ts:2',
+        'high server/config/aws.ts:3',
+        'high server/lib/keys.ts:1',
+        'high server/lib/keys.ts:2',
+      ]);
+      expect(secrets.every((f) => f.owaspCategory === 'A04:2025-Cryptographic Failures')).toBe(
+        true,
+      );
+      // Nothing persisted or served by the API contains a full secret.
+      const served = JSON.stringify(findings);
+      for (const value of Object.values(FAKE)) {
+        if (!value.startsWith('-----')) expect(served).not.toContain(value);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists weak-crypto findings with the right severities', async () => {
+    const { findings } = await scanFixture('crypto');
+    const weak = findings.filter((f) => f.detectorId === 'A6-weak-crypto');
+    expect(weak.map((f) => `${f.severity} ${f.filePath}:${f.lineStart}`)).toEqual([
+      'high legacy/auth.py:6',
+      'medium server/lib/encryption.js:3',
+      'medium server/lib/encryption.js:7',
+      'medium server/lib/encryption.js:10',
+      'high server/lib/insecurity.ts:5',
+      'medium server/lib/insecurity.ts:10',
+      'medium server/lib/insecurity.ts:14',
+      'high server/lib/legacy-cipher.js:5',
+      'high server/lib/legacy-cipher.js:10',
+      'high server/lib/legacy-cipher.js:15',
+      'low server/lib/request-id.js:5',
+      'high server/routes/changePassword.js:7',
+      'high server/routes/changePassword.js:8',
+    ]);
+    expect(weak.some((f) => f.filePath === 'server/lib/checksum.js')).toBe(false);
+    expect(weak.some((f) => f.filePath === 'server/lib/passwords.js')).toBe(false);
   });
 });

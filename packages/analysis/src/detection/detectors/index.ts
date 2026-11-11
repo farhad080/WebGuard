@@ -7,6 +7,8 @@ import './a1-sql-injection.js';
 import './a2-nosql-injection.js';
 import './a3-ssti.js';
 import './a4-xss.js';
+import './a5-hardcoded-secrets.js';
+import './a6-weak-crypto.js';
 
 /** A fresh registry with every built-in detector (callers may register more on it). */
 export function createDefaultDetectorRegistry(): DetectorRegistry {
