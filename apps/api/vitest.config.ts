@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadEnv } from 'dotenv';
 import { defineConfig } from 'vitest/config';
@@ -12,9 +14,14 @@ export default defineConfig({
     env: {
       DATABASE_URL: testDatabaseUrl,
       JWT_SECRET: process.env.JWT_SECRET ?? 'test-only-jwt-secret',
+      REDIS_URL: process.env.REDIS_URL ?? 'redis://localhost:6379',
+      // Isolated from the dev queue and dev storage.
+      SCAN_QUEUE_NAME: 'webguard-test-scans',
+      STORAGE_DIR: path.join(os.tmpdir(), 'webguard-test-storage'),
     },
     globalSetup: ['./test/global-setup.ts'],
-    // Tests share one database; run files sequentially.
+    // Tests share one database and one queue; run files sequentially.
     fileParallelism: false,
+    testTimeout: 30_000,
   },
 });

@@ -1,9 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import type { Finding, Project, Scan } from '@webguard/core';
 import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUserWithToken, resetDatabase } from '../../test/helpers.js';
 import { createApp } from '../app.js';
 import { prisma } from '../db.js';
+import { closeScanQueue, getScanQueue } from '../scans/queue.js';
 
 const app = createApp();
 let alice: string;
@@ -16,6 +18,8 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await getScanQueue().obliterate({ force: true });
+  await closeScanQueue();
   await prisma.$disconnect();
 });
 
@@ -25,10 +29,13 @@ async function createProject(auth: string, name = 'My site'): Promise<Project> {
   return res.body as Project;
 }
 
+const validZip = fileURLToPath(new URL('../../test/fixtures/valid-site.zip', import.meta.url));
+
 async function createScan(auth: string, projectId: string): Promise<Scan> {
   const res = await request(app)
     .post(`/api/projects/${projectId}/scans`)
-    .set('Authorization', auth);
+    .set('Authorization', auth)
+    .attach('file', validZip, { contentType: 'application/zip' });
   expect(res.status).toBe(201);
   return res.body as Scan;
 }

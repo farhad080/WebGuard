@@ -18,8 +18,37 @@ npm install
 docker compose up -d        # Postgres + Redis
 npm run db:migrate          # apply Prisma migrations
 npm run dev --workspace apps/api
+npm run worker              # in a second terminal: processes queued scans
 npm test                    # uses TEST_DATABASE_URL (a separate *_test database)
 ```
+
+## Scanning pipeline
+
+```
+POST /api/projects/:id/scans  (multipart, field "file")
+  → validate upload   .zip name + application/zip MIME + "PK" magic bytes, ≤ MAX_UPLOAD_BYTES (50 MB)
+  → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
+  → queue             BullMQ job { scanId } on Redis; scan status = queued
+  → worker            status = running → safe-extract → artifacts(kind = extracted)
+                      → summary_json { filesExtracted, totalBytes, detectors: [] } → completed
+                      (any error → failed, summary_json.error, temp dir removed)
+```
+
+Clients poll `GET /api/scans/:id` to follow `queued → running → completed | failed`.
+
+`StorageService` is an interface; the current `LocalStorageService` writes under
+`STORAGE_DIR`, and an S3-compatible implementation can replace it without changing callers.
+
+**Extraction safety.** Uploaded archives are attacker-controlled, so `ExtractorService`:
+
+- **Blocks zip-slip / path traversal:** every entry path is resolved and must stay inside
+  the per-scan temp directory. `..` segments, absolute paths, drive letters, backslashes,
+  `:` (alternate data streams), and reserved device names are rejected, and the scan fails.
+- **Blocks zip bombs:** caps entry count (`EXTRACT_MAX_FILES`, 20,000), total uncompressed
+  size (`EXTRACT_MAX_TOTAL_BYTES`, 500 MB, checked against both declared sizes and the bytes
+  actually written), and per-entry compression ratio (`EXTRACT_MAX_COMPRESSION_RATIO`, 100:1).
+- **Never materializes symlinks or special files:** symlinks, devices, FIFOs, and encrypted
+  entries are skipped. Files are created exclusively (`wx`), so duplicates can't overwrite.
 
 ## Authentication
 
@@ -68,7 +97,7 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 | GET    | `/api/projects/:id`       | One project                                                                    |
 | PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                   |
 | DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                    |
-| POST   | `/api/projects/:id/scans` | Creates a `queued` scan → `201`                                                |
+| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                        |
 | GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                              |
 | GET    | `/api/scans/:id`          | One scan with status and summary                                               |
 | GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence` |
@@ -78,3 +107,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 1. Project scaffold & tooling
 - [x] 2. Backend API & JWT authentication
 - [x] 3. Projects & scans data model + CRUD
+- [x] 4. ZIP upload, safe extraction & job queue

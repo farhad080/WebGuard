@@ -1,7 +1,12 @@
+import { unlink } from 'node:fs/promises';
+import type { Project } from '@prisma/client';
 import { Router } from 'express';
 import { authMiddleware } from '../auth/middleware.js';
 import { prisma } from '../db.js';
 import { asyncHandler } from '../middleware/async-handler.js';
+import { enqueueScan } from '../scans/queue.js';
+import { getStorage, storageKeys } from '../scans/storage.js';
+import { zipUpload } from '../scans/upload.js';
 import { findOwnedProject, parseId } from './ownership.js';
 import { projectBodySchema } from './schemas.js';
 import { toProject, toScan } from './serializers.js';
@@ -98,15 +103,45 @@ projectsRouter.delete(
 
 projectsRouter.post(
   '/:id/scans',
-  asyncHandler(async (req, res) => {
+  // Ownership is checked before the upload is read, so non-owners can't store anything.
+  asyncHandler(async (req, res, next) => {
     const id = parseId(req.params.id);
     const project = id && (await findOwnedProject(req.user!.id, id));
     if (!project) {
       res.status(404).json(notFound);
       return;
     }
-    const scan = await prisma.scan.create({ data: { projectId: project.id } });
-    res.status(201).json(toScan(scan));
+    res.locals.project = project;
+    next();
+  }),
+  zipUpload(),
+  asyncHandler(async (req, res) => {
+    const project = res.locals.project as Project;
+    const file = req.file!;
+    try {
+      const scan = await prisma.scan.create({ data: { projectId: project.id } });
+      try {
+        const key = storageKeys.rawZip(scan.id);
+        await getStorage().putFile(key, file.path);
+        await prisma.artifact.create({
+          data: { scanId: scan.id, kind: 'raw_zip', storageKey: key },
+        });
+        await enqueueScan(scan.id);
+      } catch (err) {
+        await prisma.scan.update({
+          where: { id: scan.id },
+          data: {
+            status: 'failed',
+            finishedAt: new Date(),
+            summaryJson: { error: 'Failed to queue scan' },
+          },
+        });
+        throw err;
+      }
+      res.status(201).json(toScan(scan));
+    } finally {
+      await unlink(file.path).catch(() => undefined);
+    }
   }),
 );
 

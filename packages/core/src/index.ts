@@ -27,8 +27,16 @@ export interface Project {
   createdAt: IsoDateString;
 }
 
-/** Placeholder; the scan summary shape is defined once scanning exists. */
-export type ScanSummary = Record<string, unknown>;
+/** Written by the worker. Detector results are a placeholder until detection exists. */
+export interface ScanSummary {
+  filesExtracted?: number;
+  totalBytes?: number;
+  /** Symlinks, special files, and encrypted entries that were not extracted. */
+  skippedEntries?: number;
+  detectors?: string[];
+  /** Present when status is `failed`. */
+  error?: string;
+}
 
 export interface Scan {
   id: string;
