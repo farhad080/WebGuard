@@ -99,6 +99,13 @@ function renderFinding(f: Finding, index: number): string {
 </article>`;
 }
 
+/** "node_modules, dist" — at most 4 names, then "+N more". */
+function skippedDirsLabel(dirs: string[]): string {
+  return dirs.length > 4
+    ? `${dirs.slice(0, 4).join(', ')} +${dirs.length - 4} more`
+    : dirs.join(', ');
+}
+
 export function renderReportHtml(report: ScanReport): string {
   const { rollup } = report;
   const total = Math.max(rollup.total, 1);
@@ -129,7 +136,7 @@ export function renderReportHtml(report: ScanReport): string {
       <div class="meta">Scan ${e(report.scan.id)} · finished ${e(report.scan.finishedAt ?? report.scan.createdAt)} · generated ${e(report.generatedAt)}</div>
       ${
         report.profile
-          ? `<div class="meta">${e(report.profile.languages.map((l) => `${l.language} (${l.files})`).join(', '))}${report.profile.frameworks.length ? ` · ${e(report.profile.frameworks.map((f) => f.name).join(', '))}` : ''} · ${report.profile.filesParsed} files parsed</div>`
+          ? `<div class="meta">${e(report.profile.languages.map((l) => `${l.language} (${l.files})`).join(', '))}${report.profile.frameworks.length ? ` · ${e(report.profile.frameworks.map((f) => f.name).join(', '))}` : ''} · ${report.profile.filesParsed} files parsed${report.profile.skippedFileCount ? ` · ignored ${report.profile.skippedFileCount} dependency/build files (${e(skippedDirsLabel(report.profile.skippedDirs))})` : ''}</div>`
           : ''
       }
     </div>

@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { ignoredDirOf } from '@webguard/analysis';
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
 
 /**
@@ -12,6 +13,10 @@ import yauzl, { type Entry, type ZipFile } from 'yauzl';
  *  - zip bombs: entry count, total uncompressed bytes (declared AND actually written), and
  *    per-entry compression ratio are capped
  *  - symlinks, devices, FIFOs, and encrypted entries are skipped, never materialized
+ *  - entries under an ignored directory (node_modules, dist, .git, …: `ignoredDirs`) are
+ *    skipped BEFORE any cap is applied: never written, never counted toward the file-count,
+ *    size, or ratio caps. Their paths are still validated, so a zip-slip name fails the scan
+ *    even when it sits under node_modules/.
  */
 
 export interface ExtractionLimits {
@@ -23,12 +28,22 @@ export interface ExtractionLimits {
   maxCompressionRatio: number;
   /** Only entries at least this large are subject to the ratio check (small text compresses well). */
   ratioCheckMinBytes: number;
+  /** Directory names (any path segment) whose contents are not extracted. Default: none. */
+  ignoredDirs?: readonly string[];
 }
+
+/** At most this many skipped directories are listed in the result (the file count is exact). */
+export const MAX_LISTED_SKIPPED_DIRS = 100;
 
 export interface ExtractionResult {
   filesExtracted: number;
   totalBytes: number;
+  /** Symlinks, special files, and encrypted entries (outside ignored dirs) not extracted. */
   skippedEntries: number;
+  /** Top-most ignored directories that had entries, sorted (at most MAX_LISTED_SKIPPED_DIRS). */
+  skippedDirs: string[];
+  /** File entries under ignored directories (not extracted, not counted against any cap). */
+  skippedFileCount: number;
 }
 
 /** A failure caused by the archive itself. Its message is safe to show to the user. */
@@ -151,6 +166,7 @@ export class ExtractorService {
   /** Extracts `zipPath` into `destDir` (created if missing). Throws ExtractionError on unsafe input. */
   async extract(zipPath: string, destDir: string): Promise<ExtractionResult> {
     const { maxTotalBytes, maxFiles, maxCompressionRatio, ratioCheckMinBytes } = this.limits;
+    const ignored = new Set(this.limits.ignoredDirs ?? []);
     await mkdir(destDir, { recursive: true });
 
     let zip: ZipFile;
@@ -160,16 +176,20 @@ export class ExtractorService {
       throw toExtractionError(err);
     }
 
-    const result: ExtractionResult = { filesExtracted: 0, totalBytes: 0, skippedEntries: 0 };
+    const result: ExtractionResult = {
+      filesExtracted: 0,
+      totalBytes: 0,
+      skippedEntries: 0,
+      skippedDirs: [],
+      skippedFileCount: 0,
+    };
+    const skippedDirs = new Set<string>();
     let declaredTotal = 0;
+    // Entries outside ignored dirs (files + directories): what MAX_EXTRACTED_FILES caps. The
+    // archive's own entry count can't be used up front, since it includes ignored entries.
+    let counted = 0;
 
     try {
-      if (zip.entryCount > maxFiles) {
-        throw new ExtractionError(
-          `Archive has too many entries (${zip.entryCount}; limit ${maxFiles}, MAX_EXTRACTED_FILES)`,
-        );
-      }
-
       for (let entry = await nextEntry(zip); entry; entry = await nextEntry(zip)) {
         // Validate the path of every entry, including ones we end up skipping.
         const target = resolveSafeEntryPath(destDir, entry.fileName);
@@ -177,6 +197,25 @@ export class ExtractorService {
         const madeByUnix = entry.versionMadeBy >> 8 === 3;
         const mode = madeByUnix ? (entry.externalFileAttributes >>> 16) & S_IFMT : 0;
         const isDirectory = entry.fileName.endsWith('/') || mode === S_IFDIR;
+
+        // Dependency/build/VCS trees: skipped before any counting or cap.
+        if (ignored.size > 0) {
+          const name =
+            isDirectory && !entry.fileName.endsWith('/') ? `${entry.fileName}/` : entry.fileName;
+          const dir = ignoredDirOf(name, ignored);
+          if (dir !== null) {
+            if (skippedDirs.size < MAX_LISTED_SKIPPED_DIRS) skippedDirs.add(dir);
+            if (!isDirectory) result.skippedFileCount++;
+            continue;
+          }
+        }
+
+        counted++;
+        if (counted > maxFiles) {
+          throw new ExtractionError(
+            `Archive has too many entries (more than ${maxFiles} outside ignored directories; limit ${maxFiles}, MAX_EXTRACTED_FILES)`,
+          );
+        }
         if (isDirectory) continue;
         if (mode !== 0 && mode !== S_IFREG) {
           // Symlink, device, FIFO, socket: never materialize.
@@ -228,6 +267,7 @@ export class ExtractorService {
         );
         result.filesExtracted++;
       }
+      result.skippedDirs = [...skippedDirs].sort();
       return result;
     } catch (err) {
       throw toExtractionError(err);

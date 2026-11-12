@@ -9,6 +9,8 @@ import {
 export interface AnalysisThreadInput {
   extractDir: string;
   maxFileBytes: number;
+  /** Default: the shared DEFAULT_IGNORED_DIRS. */
+  ignoredDirs?: readonly string[];
   network: NetworkSettings;
   llm: LlmSettings;
   deadline: number;

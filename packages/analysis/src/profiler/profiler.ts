@@ -20,19 +20,9 @@ export interface ProfilerOptions {
   ignoredDirs?: readonly string[];
 }
 
-export const DEFAULT_IGNORED_DIRS = [
-  'node_modules',
-  'bower_components',
-  'dist',
-  'build',
-  'coverage',
-  '.git',
-  '.hg',
-  '.svn',
-  '.next',
-  '.nuxt',
-  '.cache',
-] as const;
+import { DEFAULT_IGNORED_DIRS } from './ignored-dirs.js';
+
+export { DEFAULT_IGNORED_DIRS };
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const SNIFF_BYTES = 8192;

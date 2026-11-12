@@ -125,6 +125,8 @@ export interface AnalysisOutput {
 
 export interface AnalyzeOptions {
   maxFileBytes: number;
+  /** Directory names skipped by profiling/parsing (the extractor's EXTRACT_IGNORE_DIRS). */
+  ignoredDirs?: readonly string[];
   detectors: DetectorRegistry;
   remediation: RemediationService;
   budget?: AnalysisBudget;
@@ -134,11 +136,11 @@ const MAX_PARSE_ERROR_SAMPLES = 20;
 
 export async function analyzeProject(
   extractDir: string,
-  { maxFileBytes, detectors, remediation, budget }: AnalyzeOptions,
+  { maxFileBytes, ignoredDirs, detectors, remediation, budget }: AnalyzeOptions,
 ): Promise<AnalysisOutput> {
   // Analysis inputs: profile the project, then parse every supported source file.
   // A file that fails to parse is recorded and skipped; it never fails the scan.
-  const profile = await new ProfilerService({ maxFileBytes }).profile(extractDir);
+  const profile = await new ProfilerService({ maxFileBytes, ignoredDirs }).profile(extractDir);
   checkBudget(budget);
   const files: ParsedFile[] = [];
   let parseErrors = 0;
@@ -157,7 +159,7 @@ export async function analyzeProject(
 
   // Detection: every registered detector, stage by stage; then de-duplicate/correlate.
   // A failing detector is recorded in detectorErrors; it never fails the scan.
-  const ctx = createDetectionContext({ rootDir: extractDir, profile, files });
+  const ctx = createDetectionContext({ rootDir: extractDir, profile, files, ignoredDirs });
   const engine = new DetectionEngine(detectors, { checkpoint: () => checkBudget(budget) });
   const detection = await engine.run(ctx);
   checkBudget(budget);

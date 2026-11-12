@@ -103,11 +103,13 @@ POST /api/projects/:id/scans  (multipart, field "file")
   → validate upload   .zip name + application/zip MIME + "PK" magic bytes, ≤ MAX_UPLOAD_MB (512 MB)
   → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
   → queue             BullMQ job { scanId } on Redis; scan status = queued
-  → worker            status = running → safe-extract → artifacts(kind = extracted)
+  → worker            status = running → safe-extract (dependency/build/VCS dirs skipped)
+                        → artifacts(kind = extracted)
                       → analysis thread (heap cap + wall-clock timeout, network guard):
                           profile → parse (common AST) → detect → de-dup/correlate → remediate
-                      → findings rows + summary_json { profile, filesParsed, parseErrors,
-                          detectors, rollup, detectorErrors, informationalNotes, … }
+                      → findings rows + summary_json { extractedFiles, skippedDirs,
+                          skippedFileCount, profile, filesParsed, parseErrors, detectors,
+                          rollup, detectorErrors, informationalNotes, … }
                           (one transaction)
                       → completed
                       (any error or exceeded limit → failed + summary_json.error)
@@ -125,7 +127,10 @@ Clients poll `GET /api/scans/:id` to follow `queued → running → completed | 
 - **Blocks zip-slip / path traversal:** every entry path is resolved and must stay inside
   the per-scan temp directory. `..` segments, absolute paths, drive letters, backslashes,
   `:` (alternate data streams), and reserved device names are rejected, and the scan fails.
-- **Blocks zip bombs:** caps entry count (`MAX_EXTRACTED_FILES`, 60,000), total uncompressed
+- **Skips dependency, build, and VCS directories:** entries under `node_modules/`, `.git/`,
+  `dist/`, … (`EXTRACT_IGNORE_DIRS`, see below) are never written and never counted toward
+  any cap. Their paths are still checked, so a traversal name fails the scan even there.
+- **Blocks zip bombs:** caps entry count (`MAX_EXTRACTED_FILES`, 100,000), total uncompressed
   size (`MAX_EXTRACTED_MB`, 2048 MB, checked against both declared sizes and the bytes
   actually written), and per-entry compression ratio (`MAX_COMPRESSION_RATIO`, 200:1).
 - **Never materializes symlinks or special files:** symlinks, devices, FIFOs, and encrypted
@@ -141,8 +146,37 @@ API and worker pick up a change on restart). Defaults fit projects of a few hund
 | `MAX_UPLOAD_MB`         | 512             | Size of the uploaded ZIP. Over it → `413 {"error":"File exceeds the 512 MB upload limit …","limitMb":512}` |
 | `UPLOAD_TIMEOUT_MS`     | 600000 (10 min) | How long one upload request may take to arrive (Node `requestTimeout`) and may stall on the upload route   |
 | `MAX_EXTRACTED_MB`      | 2048            | Total uncompressed size of the archive                                                                     |
-| `MAX_EXTRACTED_FILES`   | 60000           | Entries (files + directories) in the archive                                                               |
+| `MAX_EXTRACTED_FILES`   | 100000          | Entries (files + directories) outside ignored directories                                                  |
+| `EXTRACT_IGNORE_DIRS`   | see below       | Comma-separated directory names to skip (replaces the default list; `none` extracts everything)            |
 | `MAX_COMPRESSION_RATIO` | 200             | Uncompressed:compressed ratio of any entry of 1 MB or more                                                 |
+
+**Skipped directories.** Real projects are often zipped with their installed dependencies
+and build output: one with `node_modules` easily has 90,000+ files, almost none of them the
+project's own code. Any directory with one of these names, at any depth (so
+`packages/web/node_modules/` too), is skipped during extraction, before the file-count, size,
+and ratio caps apply, and the same list is used by profiling and parsing:
+
+```
+node_modules  bower_components  vendor  .venv  venv  __pycache__            (dependencies)
+dist  build  out  .next  .nuxt  coverage  target  .gradle  .cache           (build output, caches)
+.git  .hg  .svn                                                             (version control)
+```
+
+- Only directory names match: a file named `build`, or a directory named `builder`, is kept.
+- Manifests and lockfiles at the project root (or any non-ignored directory) are always
+  extracted, so the dependency detector still analyzes `package.json`, `package-lock.json`,
+  `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `Pipfile*`, `composer.json/lock`,
+  `go.mod/sum`, …. The copies inside `node_modules/` are not needed: the root lockfile
+  already pins every installed version.
+- The scan reports what was skipped. `summary_json` has `extractedFiles`, `skippedFileCount`,
+  and `skippedDirs` (the top-most skipped directories, up to 100). The scan page and the
+  reports show it as "ignored N dependency/build files". It is informational, not an error.
+- `MAX_EXTRACTED_FILES` remains a safety net for archives whose own files are too many.
+- To scan a directory on the list (say your sources live in `build/`), set
+  `EXTRACT_IGNORE_DIRS` to the names you do want skipped, e.g.
+  `EXTRACT_IGNORE_DIRS=node_modules,.git,dist`.
+
+**Other notes.**
 
 - The multipart upload is streamed to disk by multer; the JSON body parser (100 kB) only
   handles `application/json`, so it never caps an upload.
@@ -240,8 +274,8 @@ WebGuard analyzes **untrusted code**, so the scanner treats every upload as host
   `pnpm-lock.yaml`, plus Python/PHP/Ruby/Go/Java equivalents)
 - `sensitivePaths` — `.env*`, `Dockerfile`, `docker-compose*`, Terraform, YAML in infra/CI dirs,
   key material, and anything under a served dir (`public/`, `static/`, `www/`, …)
-- `sourceFiles` — what to analyze. `node_modules`, `dist`, `build`, `.git` (and similar) are
-  never descended; binaries and files over `ANALYSIS_MAX_FILE_BYTES` (1 MB) are skipped and
+- `sourceFiles` — what to analyze. The [skipped directories](#limits--configuration)
+  (`node_modules`, `dist`, `build`, `.git`, …; same list as extraction) are never descended; binaries and files over `ANALYSIS_MAX_FILE_BYTES` (1 MB) are skipped and
   counted in `ignored.byReason`.
 
 **Common AST contract** (language-independent):
@@ -804,7 +838,7 @@ see `.env.example`.
 | `REDIS_URL` / `SCAN_QUEUE_NAME`                                      | `redis://localhost:6379` / `scans`      | BullMQ connection and queue                                             |
 | `STORAGE_DIR`                                                        | `./storage`                             | Local `StorageService` root (relative to `apps/api`); never served      |
 | `MAX_UPLOAD_MB` / `UPLOAD_TIMEOUT_MS`                                | 512 / 600000                            | Upload size cap / upload time limit ([details](#limits--configuration)) |
-| `MAX_EXTRACTED_FILES` / `MAX_EXTRACTED_MB` / `MAX_COMPRESSION_RATIO` | 60,000 / 2048 MB / 200                  | Zip-bomb limits ([details](#limits--configuration))                     |
+| `MAX_EXTRACTED_FILES` / `MAX_EXTRACTED_MB` / `MAX_COMPRESSION_RATIO` | 100,000 / 2048 MB / 200                 | Zip-bomb limits ([details](#limits--configuration))                     |
 | `ANALYSIS_MAX_FILE_BYTES`                                            | 1 MB                                    | Larger files are profiled but not parsed                                |
 | `SCAN_TIMEOUT_MS`                                                    | 600000                                  | Wall-clock limit per scan job                                           |
 | `SCAN_MAX_HEAP_MB`                                                   | 1024                                    | Heap cap for the analysis thread                                        |

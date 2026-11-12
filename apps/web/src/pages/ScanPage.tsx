@@ -73,6 +73,13 @@ function usePreviousScan(scan: Scan | undefined) {
   );
 }
 
+/** "node_modules, dist" — at most 4 names, then "+N more". */
+function skippedDirsLabel(dirs: string[]): string {
+  return dirs.length > 4
+    ? `${dirs.slice(0, 4).join(', ')} +${dirs.length - 4} more`
+    : dirs.join(', ');
+}
+
 export function ScanPage() {
   const { scanId = '' } = useParams();
   const scan = useQuery({
@@ -185,6 +192,18 @@ export function ScanPage() {
                   {summary.filesParsed ?? 0} of {profile.sourceFiles.length} source files
                   {summary.parseErrors ? ` · ${summary.parseErrors} with parse errors` : ''}
                 </dd>
+                {summary.skippedFileCount ? (
+                  <>
+                    <dt>Ignored</dt>
+                    <dd data-testid="skipped-files">
+                      {summary.skippedFileCount.toLocaleString()} dependency/build files
+                      {summary.skippedDirs?.length
+                        ? ` in ${skippedDirsLabel(summary.skippedDirs)}`
+                        : ''}{' '}
+                      <span className="muted">(not extracted or scanned)</span>
+                    </dd>
+                  </>
+                ) : null}
                 {summary.detectorErrors && summary.detectorErrors.length > 0 && (
                   <>
                     <dt>Detector errors</dt>

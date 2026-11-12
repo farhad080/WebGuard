@@ -169,8 +169,11 @@ describe('worker (BullMQ + Redis + Postgres, end to end)', () => {
     expect(new Date(final.startedAt!) <= new Date(final.finishedAt!)).toBe(true);
     expect(final.summary).toMatchObject({
       filesExtracted: 3,
+      extractedFiles: 3,
       totalBytes: expect.any(Number),
       skippedEntries: 0,
+      skippedDirs: [],
+      skippedFileCount: 0,
       filesParsed: 2, // src/app.js, src/lib/util.js
       parseErrors: 0,
       detectors: [
@@ -262,7 +265,10 @@ describe('processScan analysis inputs (profile + parse)', () => {
     expect(profile.frameworks.map((f) => f.name)).toEqual(['Node.js', 'Express']);
     expect(profile.manifests.map((m) => m.path)).toEqual(['package-lock.json', 'package.json']);
     expect(profile.sourceFiles.some((f) => f.path.startsWith('node_modules/'))).toBe(false);
-    expect(profile.ignored.byReason['ignored-dir']).toBe(2);
+    // node_modules is skipped by the extractor already (so the profiler never sees it), and
+    // the skip is reported; the root manifests are still extracted and profiled.
+    expect(summary).toMatchObject({ skippedDirs: ['node_modules'], skippedFileCount: 2 });
+    expect(profile.ignored.byReason['ignored-dir']).toBe(0);
     expect(profile.sensitivePaths).toEqual(
       expect.arrayContaining([
         { path: 'Dockerfile', category: 'dockerfile' },

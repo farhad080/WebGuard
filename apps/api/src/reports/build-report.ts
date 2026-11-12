@@ -33,6 +33,8 @@ export async function buildScanReport(scan: Scan, project: Project): Promise<Sca
           sourceFiles: profile.sourceFiles.length,
           filesParsed: summary.filesParsed ?? 0,
           parseErrors: summary.parseErrors ?? 0,
+          skippedFileCount: summary.skippedFileCount ?? 0,
+          skippedDirs: summary.skippedDirs ?? [],
         }
       : null,
     // The stored rollup is authoritative; older scans get one computed on the fly.

@@ -90,7 +90,7 @@ describe('limit configuration (env-driven)', () => {
       expect(config.uploadTimeoutMs).toBe(600_000);
       expect(config.extraction).toMatchObject({
         maxTotalBytes: 2048 * 1024 * 1024,
-        maxFiles: 60_000,
+        maxFiles: 100_000,
         maxCompressionRatio: 200,
       });
     });
@@ -216,7 +216,9 @@ describe('extraction caps from env (zip-bomb guard)', () => {
       buildZip(Array.from({ length: 12 }, (_, i) => ({ name: `f${i}.js`, data: '1' }))),
     );
     const reason = await withEnv({ MAX_EXTRACTED_FILES: '10' }, () => failureReason(scanId));
-    expect(reason).toMatch(/too many entries \(12; limit 10, MAX_EXTRACTED_FILES\)/);
+    expect(reason).toMatch(
+      /too many entries \(more than 10 outside ignored directories; limit 10, MAX_EXTRACTED_FILES\)/,
+    );
   });
 
   it('still stops a zip bomb at the raised default ratio (200:1)', async () => {

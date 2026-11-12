@@ -142,6 +142,45 @@ describe('upload → poll → dashboard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('"notes.txt" is not a .zip file.');
     expect(xhr.sent).toHaveLength(0);
   });
+  it('shows how many dependency/build files were ignored during extraction', async () => {
+    mockApi({
+      'GET /api/auth/me': () => ({ body: user }),
+      'GET /api/scans/:id': () => ({
+        body: scan({
+          status: 'completed',
+          startedAt: '2026-11-12T10:00:01.000Z',
+          finishedAt: '2026-11-12T10:00:04.000Z',
+          summary: {
+            rollup: rollup(),
+            filesParsed: 3,
+            extractedFiles: 3,
+            skippedFileCount: 89654,
+            skippedDirs: ['.git', 'node_modules'],
+            profile: {
+              languages: [{ language: 'javascript', files: 3, bytes: 300 }],
+              frameworks: [],
+              manifests: [],
+              sensitivePaths: [],
+              sourceFiles: [],
+              ignored: {
+                total: 0,
+                byReason: { 'ignored-dir': 0, binary: 0, 'too-large': 0, unrecognized: 0 },
+              },
+              totals: { files: 3, bytes: 300 },
+            },
+          },
+        }),
+      }),
+      'GET /api/projects/:id/scans': () => ({ body: [] }),
+      'GET /api/scans/:id/findings': () => ({ body: [] }),
+    });
+    renderApp('/scans/s1');
+    const line = await screen.findByTestId('skipped-files');
+    expect(line).toHaveTextContent(
+      `${(89654).toLocaleString()} dependency/build files in .git, node_modules (not extracted or scanned)`,
+    );
+  });
+
   describe('client-side size check (server MAX_UPLOAD_MB via GET /api/limits)', () => {
     const MiB = 1024 * 1024;
     const zipOf = (bytes: number) => {

@@ -187,6 +187,10 @@ export interface ScanReport {
     sourceFiles: number;
     filesParsed: number;
     parseErrors: number;
+    /** Dependency/build/VCS files skipped during extraction (0 for older scans). */
+    skippedFileCount: number;
+    /** The top-most skipped directories (capped list). */
+    skippedDirs: string[];
   } | null;
   rollup: ScanRollup;
   /** Every finding with its remediation, most severe first. */
@@ -202,6 +206,12 @@ export interface ScanSummary {
   totalBytes?: number;
   /** Symlinks, special files, and encrypted entries that were not extracted. */
   skippedEntries?: number;
+  /** Files written to disk by the extractor (same as filesExtracted). */
+  extractedFiles?: number;
+  /** Top-most ignored directories (dependency/build/VCS) that were not extracted, sorted; capped. */
+  skippedDirs?: string[];
+  /** Files under those directories that were skipped (not extracted, not counted against caps). */
+  skippedFileCount?: number;
   profile?: ProjectProfile;
   /** Source files that produced an AST (including ones parsed with recovered errors). */
   filesParsed?: number;

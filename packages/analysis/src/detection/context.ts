@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { ProjectProfile } from '@webguard/core';
 import type { ParsedFile } from '../ast/types.js';
+import { DEFAULT_IGNORED_DIRS } from '../profiler/ignored-dirs.js';
 import { getSnippet } from './snippet.js';
 import type { DetectionContext } from './types.js';
 
@@ -12,14 +13,15 @@ export interface DetectionContextInput {
   files: readonly ParsedFile[];
   /** `readText` refuses files larger than this (default 5 MB). */
   maxReadBytes?: number;
+  /** Directory names never listed in `allFiles` (same list as the profiler/extractor). */
+  ignoredDirs?: readonly string[];
 }
 
 const DEFAULT_MAX_READ_BYTES = 5 * 1024 * 1024;
-const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn']);
 const MAX_LISTED_FILES = 50_000;
 
 /** Every regular file in the project (incl. binaries and unrecognized types), `/`-separated. */
-function listAllFiles(root: string): string[] {
+function listAllFiles(root: string, skipDirs: ReadonlySet<string>): string[] {
   const out: string[] = [];
   const visit = (dir: string) => {
     let entries;
@@ -32,7 +34,7 @@ function listAllFiles(root: string): string[] {
       if (out.length >= MAX_LISTED_FILES) return;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) visit(abs);
+        if (!skipDirs.has(entry.name)) visit(abs);
       } else if (entry.isFile()) {
         out.push(path.relative(root, abs).split(path.sep).join('/'));
       }
@@ -80,7 +82,7 @@ export function createDetectionContext(input: DetectionContextInput): DetectionC
   return {
     profile: input.profile,
     files: input.files,
-    allFiles: listAllFiles(root),
+    allFiles: listAllFiles(root, new Set(input.ignoredDirs ?? DEFAULT_IGNORED_DIRS)),
     sourceFiles: input.profile.sourceFiles,
     manifests: input.profile.manifests,
     configPaths: input.profile.sensitivePaths,

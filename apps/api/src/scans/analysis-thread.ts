@@ -16,6 +16,7 @@ async function main(): Promise<AnalysisThreadMessage> {
   try {
     const result = await analyze.analyzeProject(input.extractDir, {
       maxFileBytes: input.maxFileBytes,
+      ignoredDirs: input.ignoredDirs,
       detectors: analyze.buildDetectorRegistry(input.network),
       remediation: await analyze.buildRemediation(input.llm),
       budget: {

@@ -111,6 +111,7 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       analysis = await withDeadline(
         analyzeProject(extractDir, {
           maxFileBytes: config.analysisMaxFileBytes,
+          ignoredDirs: config.ignoredDirs,
           detectors: options.detectors ?? buildDetectorRegistry(network),
           remediation: options.remediation ?? (await buildRemediation(config.remediationLlm)),
           budget: { deadline, timeoutMs, maxHeapBytes },
@@ -123,6 +124,7 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
         {
           extractDir,
           maxFileBytes: config.analysisMaxFileBytes,
+          ignoredDirs: config.ignoredDirs,
           network,
           llm: config.remediationLlm,
         },
@@ -136,6 +138,9 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       filesExtracted: result.filesExtracted,
       totalBytes: result.totalBytes,
       skippedEntries: result.skippedEntries,
+      extractedFiles: result.filesExtracted,
+      skippedDirs: result.skippedDirs,
+      skippedFileCount: result.skippedFileCount,
       profile,
       filesParsed: analysis.filesParsed,
       parseErrors: analysis.parseErrors,

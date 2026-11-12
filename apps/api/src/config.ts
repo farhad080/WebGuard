@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { DEFAULT_IGNORED_DIRS } from '@webguard/analysis';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -151,6 +152,29 @@ export const config = {
     return positiveNumber('ANALYSIS_MAX_FILE_BYTES', 1 * MiB);
   },
 
+  /**
+   * Dependency/build/VCS directory names that are skipped during extraction (never written,
+   * never counted against the caps) and by profiling/parsing. EXTRACT_IGNORE_DIRS is a
+   * comma-separated list that REPLACES the default; set it to "none" to extract everything.
+   */
+  get ignoredDirs(): readonly string[] {
+    const raw = process.env.EXTRACT_IGNORE_DIRS?.trim();
+    if (!raw) return DEFAULT_IGNORED_DIRS;
+    if (raw.toLowerCase() === 'none') return [];
+    const dirs = raw
+      .split(',')
+      .map((d) => d.trim())
+      .filter(Boolean);
+    for (const d of dirs) {
+      if (/[/\\]/.test(d) || d === '.' || d === '..') {
+        throw new Error(
+          `EXTRACT_IGNORE_DIRS entries must be single directory names (got ${JSON.stringify(d)})`,
+        );
+      }
+    }
+    return [...new Set(dirs)];
+  },
+
   get extraction() {
     return {
       // Zip-bomb guard. MAX_EXTRACTED_* / MAX_COMPRESSION_RATIO; the older EXTRACT_* names
@@ -159,7 +183,7 @@ export const config = {
         positiveNumberWithLegacy('MAX_EXTRACTED_MB', 'EXTRACT_MAX_TOTAL_BYTES', 2048, MiB) * MiB,
       ),
       maxFiles: Math.floor(
-        positiveNumberWithLegacy('MAX_EXTRACTED_FILES', 'EXTRACT_MAX_FILES', 60_000),
+        positiveNumberWithLegacy('MAX_EXTRACTED_FILES', 'EXTRACT_MAX_FILES', 100_000),
       ),
       maxCompressionRatio: positiveNumberWithLegacy(
         'MAX_COMPRESSION_RATIO',
@@ -167,6 +191,7 @@ export const config = {
         200,
       ),
       ratioCheckMinBytes: positiveNumber('EXTRACT_RATIO_CHECK_MIN_BYTES', 1 * MiB),
+      ignoredDirs: this.ignoredDirs,
     };
   },
 };

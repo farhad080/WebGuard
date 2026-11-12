@@ -1,7 +1,11 @@
-import { rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { ProjectProfile } from '@webguard/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { materializeMiniExpress } from '../../test/fixture-project.js';
+import { createDetectionContext } from '../detection/context.js';
+import { DEFAULT_IGNORED_DIRS } from './ignored-dirs.js';
 import { detectLanguage } from './languages.js';
 import { ProfilerService } from './profiler.js';
 
@@ -103,5 +107,34 @@ describe('detectLanguage', () => {
     ['LICENSE', 'MIT License', null],
   ])('%s → %s', (name, head, expected) => {
     expect(detectLanguage(name, head)).toBe(expected);
+  });
+});
+
+describe('one shared ignore list (profiler + detection context + API extractor)', () => {
+  it('skips every DEFAULT_IGNORED_DIRS directory, at any depth, in profile and allFiles', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'webguard-ignored-'));
+    try {
+      await writeFile(path.join(dir, 'app.js'), 'module.exports = 1;\n');
+      for (const name of DEFAULT_IGNORED_DIRS) {
+        await mkdir(path.join(dir, 'pkg', name), { recursive: true });
+        await writeFile(path.join(dir, 'pkg', name, 'x.js'), 'module.exports = 2;\n');
+      }
+      const prof = await new ProfilerService().profile(dir);
+      expect(prof.sourceFiles.map((f) => f.path)).toEqual(['app.js']);
+      expect(prof.ignored.byReason['ignored-dir']).toBe(DEFAULT_IGNORED_DIRS.length);
+
+      const ctx = createDetectionContext({ rootDir: dir, profile: prof, files: [] });
+      expect(ctx.allFiles).toEqual(['app.js']);
+      // A custom list (EXTRACT_IGNORE_DIRS) applies to both as well.
+      const custom = createDetectionContext({
+        rootDir: dir,
+        profile: prof,
+        files: [],
+        ignoredDirs: [],
+      });
+      expect(custom.allFiles.length).toBe(DEFAULT_IGNORED_DIRS.length + 1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

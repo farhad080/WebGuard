@@ -22,7 +22,7 @@ export interface DetectionContext {
   readonly profile: ProjectProfile;
   /** Every file a parser adapter handled (check `ast`/`parseError`: some may have failed). */
   readonly files: readonly ParsedFile[];
-  /** Every file in the project (binaries, backups, unrecognized types too), except VCS dirs and node_modules. */
+  /** Every file in the project (binaries, backups, unrecognized types too), except ignored dependency/build/VCS dirs. */
   readonly allFiles: readonly string[];
   /** All profiled text files (code, config, markup), parsed or not. */
   readonly sourceFiles: readonly SourceFile[];

@@ -4,6 +4,7 @@ export {
   DEFAULT_IGNORED_DIRS,
   type ProfilerOptions,
 } from './profiler/profiler.js';
+export { ignoredDirOf } from './profiler/ignored-dirs.js';
 export { detectLanguage, CODE_LANGUAGES } from './profiler/languages.js';
 
 // Common AST contract
