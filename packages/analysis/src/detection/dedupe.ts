@@ -71,6 +71,7 @@ export function dedupeFindings(findings: readonly ValidatedFinding[]): FindingDr
       fixSuggestion: primary.fixSuggestion,
       contributingDetectors: group.map((g) => g.best.detectorId),
       evidence: unique(group.flatMap((g) => g.evidence)),
+      cwe: primary.cwe ?? null,
     });
   }
 

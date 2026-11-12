@@ -83,6 +83,10 @@ model Finding {
   contributingDetectors String[] @default([]) @map("contributing_detectors")
   /// Short reasons from each contributing detector.
   evidence              String[] @default([])
+  /// Weakness id of the primary finding, e.g. "CWE-89".
+  cwe                   String?
+  /// Full remediation (why, impact, steps, secure example, references) from the remediation engine.
+  remediationJson       Json?    @map("remediation_json")
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   scan                  Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
 

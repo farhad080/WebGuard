@@ -4,7 +4,15 @@ import type {
   Project as ProjectRow,
   Scan as ScanRow,
 } from '@prisma/client';
-import type { Artifact, Finding, OwaspCategory, Project, Scan, ScanSummary } from '@webguard/core';
+import type {
+  Artifact,
+  Finding,
+  OwaspCategory,
+  Project,
+  Remediation,
+  Scan,
+  ScanSummary,
+} from '@webguard/core';
 
 // These map DB rows to the shared @webguard/core API contract. Assigning Prisma enum
 // values to the core unions makes the compiler flag any drift between the two.
@@ -47,6 +55,8 @@ export function toFinding(row: FindingRow): Finding {
     contributingDetectors:
       row.contributingDetectors.length > 0 ? row.contributingDetectors : [row.detectorId],
     evidence: row.evidence,
+    cwe: row.cwe,
+    remediation: (row.remediationJson as Remediation | null) ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }

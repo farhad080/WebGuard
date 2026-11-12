@@ -19,6 +19,7 @@
     "db:migrate:dev": "node scripts/with-env.mjs prisma migrate dev"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@prisma/client": "^6.19.3",
     "@webguard/analysis": "*",
     "@webguard/core": "*",

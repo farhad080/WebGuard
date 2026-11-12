@@ -353,6 +353,46 @@ Numeric casts, comparisons, `.length`, and DB lookups (`findByPk(id)` returns st
 `id`) stop taint. Detectors can add sanitizers or treat scalar coercion as safe. Not followed:
 calls into other functions or files, object mutation and aliasing, and per-branch control flow.
 
+## Remediation
+
+Every finding is enriched by the remediation engine (`RemediationService` in
+`packages/analysis/src/remediation`) after detection and de-duplication, and before
+persistence. The result is stored in `findings.remediation_json` (next to the short
+`fix_suggestion`) and returned by `GET /api/findings/:id` and `GET /api/scans/:id/findings`:
+
+```ts
+{ templateId, title, why, impact, steps: string[], references: [{ title, url }],
+  secureExample: { language, before, after, contextualized, note? },
+  generatedBy: 'template' | 'template+context' | 'llm' }
+```
+
+- **Per-detector fix templates** for all twelve detectors (plus the example detector). Each has
+  a title, why/impact, a numbered remediation algorithm, a secure before/after pair, and OWASP
+  Cheat Sheet references. Variants are picked by CWE or finding kind (e.g. A4 DOM / reflected /
+  stored, A6 password / cipher / encoding, A11 vulnerable / EOL / typosquat). Detectors without
+  a template get a generic remediation built from their own explanation and fix text, so no
+  finding ships without one.
+- **Contextualized secure examples**: the engine rewrites the finding's own code when it can do
+  so faithfully:
+  - A1 turns concatenated/interpolated SQL into a parameterized call with the same table, fields,
+    and expressions (`$n` + `bind` for Sequelize, `$n` for pg, `?` for mysql/sqlite/knex), keeping
+    `LIKE` wildcards in the bound value.
+  - A4 switches `innerHTML` to `textContent`, `bypassSecurityTrust*` to `sanitize()`, and wraps
+    echoed values in `escapeHtml(…)`.
+  - A5 replaces the redacted literal with `process.env.NAME`.
+  - A6 swaps MD5/SHA password hashing for `argon2.hash` (JS) or `PasswordHasher` (Python).
+  - A8 adds the ownership predicate; A9 adds an allowlist; A11 bumps the version or adds an
+    `overrides` entry.
+
+  When a safe rewrite isn't possible, the template's generic example is used.
+
+- **Optional LLM assist (off by default)**: with `REMEDIATION_LLM=true` and `ANTHROPIC_API_KEY`
+  set, a provider behind the `RemediationLlmProvider` interface drafts an `after` snippet only
+  for findings the deterministic rewrites couldn't handle (at most 20 per scan; marked
+  `generatedBy: 'llm'` with a "review before applying" note). It sends only the already-redacted
+  flagged snippet and the template guidance, never whole files. Without the flag, nothing leaves
+  the server, and the templates alone produce complete remediation.
+
 ## Authentication
 
 All auth endpoints live under `/api/auth` and accept/return JSON.
@@ -418,3 +458,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 9. Secrets & weak-crypto detectors
 - [x] 10. Access-control & input detectors
 - [x] 11. Files, dependencies & misconfig detectors
+- [x] 12. Remediation engine

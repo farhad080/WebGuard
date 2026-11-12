@@ -1,5 +1,6 @@
 import type {
   Finding,
+  Remediation,
   ManifestFile,
   OwaspCategory,
   ProjectProfile,
@@ -81,8 +82,13 @@ export interface Detector {
 /** A RawFinding after engine validation: defaults applied, fields normalized. */
 export type ValidatedFinding = RawFinding & { explanation: string; fixSuggestion: string };
 
-/** Final, de-duplicated finding, ready to persist (the DB assigns id / scanId / createdAt). */
-export type FindingDraft = Omit<Finding, 'id' | 'scanId' | 'createdAt'>;
+/**
+ * Final, de-duplicated finding (the DB assigns id / scanId / createdAt). `remediation` is
+ * attached afterwards by the remediation engine (see EnrichedFinding).
+ */
+export type FindingDraft = Omit<Finding, 'id' | 'scanId' | 'createdAt' | 'remediation'>;
+
+export type EnrichedFinding = FindingDraft & { remediation: Remediation };
 
 export interface DetectorError {
   detectorId: string;

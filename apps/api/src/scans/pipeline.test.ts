@@ -337,6 +337,11 @@ describe('processScan detection (detect → de-dup → persist → summary)', ()
         fixSuggestion: expect.any(String),
         contributingDetectors: ['example-todo-comment'],
         evidence: [expect.stringContaining('TODO SECURITY')],
+        cwe: 'CWE-546',
+        remediation: expect.objectContaining({
+          templateId: 'example-todo-comment',
+          generatedBy: 'template',
+        }),
         createdAt: expect.any(String),
       },
     ]);
@@ -751,5 +756,54 @@ describe('file-exposure, dependency & misconfiguration detectors through the ful
     expect(
       findings.every((f) => f.owaspCategory === 'A03:2025-Software Supply Chain Failures'),
     ).toBe(true);
+  });
+});
+
+describe('remediation through the full pipeline', () => {
+  it('persists remediation for every finding and serves it from GET /api/findings/:id', async () => {
+    const { findings } = await scanFixture('injection');
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((f) => f.remediation && f.remediation.steps.length > 0)).toBe(true);
+
+    const login = findings.find(
+      (f) => f.detectorId === 'A1-sql-injection' && f.filePath === 'routes/sqli/login.ts',
+    )!;
+    const res = await request(app).get(`/api/findings/${login.id}`).set('Authorization', alice);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: login.id, detectorId: 'A1-sql-injection', cwe: 'CWE-89' });
+    const r = (res.body as Finding).remediation!;
+    expect(r).toMatchObject({
+      templateId: 'A1-sql-injection',
+      title: 'Use a parameterized query',
+      generatedBy: 'template+context',
+    });
+    expect(r.why).toMatch(/SQL/);
+    expect(r.impact).toMatch(/Authentication bypass/);
+    expect(r.steps.length).toBeGreaterThanOrEqual(5);
+    expect(r.secureExample.after).toContain(
+      "'SELECT * FROM Users WHERE email = $1 AND password = $2 AND deletedAt IS NULL'",
+    );
+    expect(r.secureExample.after).toContain(
+      "bind: [req.body.email || '', security.hash(req.body.password || '')]",
+    );
+    expect(r.references.map((x) => x.url)).toContain(
+      'https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html',
+    );
+  });
+
+  it("returns 404 for another user's finding and for unknown ids", async () => {
+    const { findings } = await scanFixture('injection');
+    const id = findings[0]!.id;
+    expect((await request(app).get(`/api/findings/${id}`).set('Authorization', bob)).status).toBe(
+      404,
+    );
+    expect(
+      (await request(app).get('/api/findings/not-a-uuid').set('Authorization', alice)).status,
+    ).toBe(404);
+    expect((await request(app).get(`/api/findings/${id}`)).status).toBe(401);
+  });
+
+  it('runs without the LLM by default (no flag, no network)', () => {
+    expect(process.env.REMEDIATION_LLM).toBeUndefined();
   });
 });

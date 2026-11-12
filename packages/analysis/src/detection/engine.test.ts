@@ -214,6 +214,7 @@ describe('example-todo-comment detector', () => {
         fixSuggestion: expect.any(String),
         contributingDetectors: ['example-todo-comment'],
         evidence: [expect.stringContaining('TODO SECURITY')],
+        cwe: 'CWE-546',
       },
     ]);
   });

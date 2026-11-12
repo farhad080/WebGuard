@@ -196,7 +196,44 @@ export interface Finding {
   contributingDetectors: string[];
   /** Short, human-readable reasons from each contributing detector. */
   evidence: string[];
+  /** Weakness id of the primary detector's finding, e.g. "CWE-89". */
+  cwe: string | null;
+  /** Developer-ready fix (null only for rows written before the remediation engine). */
+  remediation: Remediation | null;
   createdAt: IsoDateString;
+}
+
+export interface RemediationReference {
+  title: string;
+  url: string;
+}
+
+export interface SecureExample {
+  language: string;
+  /** The vulnerable code; the finding's real snippet when contextualized. */
+  before: string;
+  /** The secure replacement. */
+  after: string;
+  /** True when `after` was rewritten from the finding's own code (not the generic template). */
+  contextualized: boolean;
+  /** Caveats for the rewrite (e.g. "verify the field list"). */
+  note?: string;
+}
+
+export interface Remediation {
+  /** Template id, e.g. "A1-sql-injection" or "A6-weak-crypto/password". */
+  templateId: string;
+  title: string;
+  /** Why the code is vulnerable and how it is exploited. */
+  why: string;
+  /** What an attacker gains. */
+  impact: string;
+  /** Numbered remediation algorithm, in order. */
+  steps: string[];
+  secureExample: SecureExample;
+  references: RemediationReference[];
+  /** How the secure example was produced. */
+  generatedBy: 'template' | 'template+context' | 'llm';
 }
 
 export interface Artifact {

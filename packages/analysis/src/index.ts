@@ -150,3 +150,20 @@ export {
 export { ADVISORY_SNAPSHOT, SNAPSHOT_META } from './deps/advisory-snapshot.js';
 export { collectDependencies, editDistance, type ResolvedDependency } from './deps/dependencies.js';
 export { POPULAR_PACKAGES, TYPOSQUAT_ALLOWLIST } from './deps/popular-packages.js';
+
+// Remediation
+export {
+  RemediationService,
+  TEMPLATE_DETECTOR_IDS,
+  type RemediationOptions,
+} from './remediation/service.js';
+export { TEMPLATE_SETS } from './remediation/templates.js';
+export { REFS as REMEDIATION_REFERENCES } from './remediation/references.js';
+export type {
+  FixTemplate,
+  TemplateSet,
+  ContextInput,
+  ContextualExample,
+  RemediationLlmProvider,
+} from './remediation/types.js';
+export type { EnrichedFinding } from './detection/types.js';

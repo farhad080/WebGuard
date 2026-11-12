@@ -11,11 +11,13 @@ import {
   parseSourceFiles,
   INFORMATIONAL_NOTES,
   ProfilerService,
+  RemediationService,
   type DetectorRegistry,
   type ParsedFile,
 } from '@webguard/analysis';
 import type { ParseErrorSample, ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
+import { AnthropicRemediationProvider } from '../remediation/anthropic-provider.js';
 import { prisma } from '../db.js';
 import { ExtractionError, ExtractorService, type ExtractionLimits } from './extractor.js';
 import { getStorage, storageKeys, uploadDirectory, type StorageService } from './storage.js';
@@ -25,9 +27,29 @@ export interface ProcessScanOptions {
   limits?: Partial<ExtractionLimits>;
   /** Detectors to run (default: every built-in detector). */
   detectors?: DetectorRegistry;
+  /** Remediation engine (default: deterministic templates, LLM assist per config). */
+  remediation?: RemediationService;
 }
 
 const MAX_PARSE_ERROR_SAMPLES = 20;
+
+let sharedRemediation: RemediationService | undefined;
+/** Built once: LLM assist only when REMEDIATION_LLM=true and an API key is configured. */
+function defaultRemediation(): RemediationService {
+  if (!sharedRemediation) {
+    const llm = config.remediationLlm;
+    sharedRemediation = new RemediationService({
+      llm: {
+        enabled: llm.enabled,
+        provider:
+          llm.enabled && llm.apiKey
+            ? new AnthropicRemediationProvider(llm.apiKey, llm.model)
+            : undefined,
+      },
+    });
+  }
+  return sharedRemediation;
+}
 const FINDINGS_BATCH_SIZE = 1000;
 
 /**
@@ -86,7 +108,12 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
     const ctx = createDetectionContext({ rootDir: extractDir, profile, files });
     const engine = new DetectionEngine(options.detectors ?? createDefaultDetectorRegistry());
     const detection = await engine.run(ctx);
-    const findings = dedupeFindings(detection.findings);
+    // Remediation: attach why/impact, steps, a (contextualized) secure example and references
+    // to every finding before it is persisted.
+    const findings = await (options.remediation ?? defaultRemediation()).enrichFindings(
+      dedupeFindings(detection.findings),
+      ctx,
+    );
     const counts = countFindings(findings);
 
     const summary: ScanSummary = {
@@ -116,7 +143,11 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
         await tx.finding.deleteMany({ where: { scanId } });
         for (let i = 0; i < findings.length; i += FINDINGS_BATCH_SIZE) {
           await tx.finding.createMany({
-            data: findings.slice(i, i + FINDINGS_BATCH_SIZE).map((f) => ({ scanId, ...f })),
+            data: findings.slice(i, i + FINDINGS_BATCH_SIZE).map(({ remediation, ...f }) => ({
+              scanId,
+              ...f,
+              remediationJson: remediation as unknown as Prisma.InputJsonObject,
+            })),
           });
         }
         await tx.scan.updateMany({

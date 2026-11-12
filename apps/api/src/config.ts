@@ -45,6 +45,19 @@ export const config = {
     return positiveNumber('MAX_UPLOAD_BYTES', 50 * MiB);
   },
 
+  /**
+   * Optional LLM assist for remediation snippets. Off unless REMEDIATION_LLM=true AND an
+   * Anthropic API key is set; no code leaves the server otherwise.
+   */
+  get remediationLlm(): { enabled: boolean; apiKey?: string; model?: string } {
+    const apiKey = process.env.ANTHROPIC_API_KEY || undefined;
+    return {
+      enabled: process.env.REMEDIATION_LLM === 'true' && apiKey !== undefined,
+      apiKey,
+      model: process.env.REMEDIATION_LLM_MODEL || undefined,
+    };
+  },
+
   /** Source files larger than this are profiled but not parsed (minified/generated code). */
   get analysisMaxFileBytes(): number {
     return positiveNumber('ANALYSIS_MAX_FILE_BYTES', 1 * MiB);
