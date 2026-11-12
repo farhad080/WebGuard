@@ -139,6 +139,12 @@ function toExtractionError(err: unknown): unknown {
   return new ExtractionError(`Invalid or corrupt ZIP archive: ${err.message}`);
 }
 
+/** 2147483648 → "2048 MB"; small test caps stay in bytes. */
+function formatBytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${Math.round(mb * 10) / 10} MB` : `${bytes} bytes`;
+}
+
 export class ExtractorService {
   constructor(private readonly limits: ExtractionLimits) {}
 
@@ -160,7 +166,7 @@ export class ExtractorService {
     try {
       if (zip.entryCount > maxFiles) {
         throw new ExtractionError(
-          `Archive has too many entries (${zip.entryCount}; limit ${maxFiles})`,
+          `Archive has too many entries (${zip.entryCount}; limit ${maxFiles}, MAX_EXTRACTED_FILES)`,
         );
       }
 
@@ -185,7 +191,7 @@ export class ExtractorService {
         declaredTotal += entry.uncompressedSize;
         if (declaredTotal > maxTotalBytes) {
           throw new ExtractionError(
-            `Archive exceeds the maximum uncompressed size (${maxTotalBytes} bytes)`,
+            `Archive exceeds the maximum uncompressed size (${formatBytes(maxTotalBytes)}; MAX_EXTRACTED_MB)`,
           );
         }
         if (entry.uncompressedSize >= ratioCheckMinBytes) {
@@ -193,7 +199,7 @@ export class ExtractorService {
             entry.compressedSize > 0 ? entry.uncompressedSize / entry.compressedSize : Infinity;
           if (ratio > maxCompressionRatio) {
             throw new ExtractionError(
-              `Entry ${describe(entry.fileName)} exceeds the maximum compression ratio (${maxCompressionRatio}:1)`,
+              `Entry ${describe(entry.fileName)} exceeds the maximum compression ratio (${maxCompressionRatio}:1; MAX_COMPRESSION_RATIO)`,
             );
           }
         }
@@ -206,7 +212,7 @@ export class ExtractorService {
             if (result.totalBytes > maxTotalBytes) {
               callback(
                 new ExtractionError(
-                  `Archive exceeds the maximum uncompressed size (${maxTotalBytes} bytes)`,
+                  `Archive exceeds the maximum uncompressed size (${formatBytes(maxTotalBytes)}; MAX_EXTRACTED_MB)`,
                 ),
               );
               return;

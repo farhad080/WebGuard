@@ -16,7 +16,15 @@ export interface User {
 
 const enc = encodeURIComponent;
 
+export interface ServerLimits {
+  maxUploadMb: number;
+  maxUploadBytes: number;
+}
+
 export const api = {
+  // public server limits (MAX_UPLOAD_MB), so the uploader checks the real cap
+  limits: () => apiJson<ServerLimits>('/api/limits'),
+
   // auth
   login: (email: string, password: string) =>
     apiJson<{ token: string }>('/api/auth/login', { method: 'POST', json: { email, password } }),

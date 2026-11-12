@@ -142,4 +142,43 @@ describe('upload → poll → dashboard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('"notes.txt" is not a .zip file.');
     expect(xhr.sent).toHaveLength(0);
   });
+  describe('client-side size check (server MAX_UPLOAD_MB via GET /api/limits)', () => {
+    const MiB = 1024 * 1024;
+    const zipOf = (bytes: number) => {
+      const file = new File(['PK'], 'project.zip', { type: 'application/zip' });
+      Object.defineProperty(file, 'size', { value: bytes });
+      return file;
+    };
+    const routes = () => ({
+      'GET /api/auth/me': () => ({ body: user }),
+      'GET /api/projects/:id': () => ({
+        body: { id: 'p1', userId: 'u1', name: 'Shop', createdAt: '2026-11-10T00:00:00.000Z' },
+      }),
+      'GET /api/projects/:id/scans': () => ({ body: [] }),
+      'GET /api/limits': () => ({ body: { maxUploadMb: 512, maxUploadBytes: 512 * MiB } }),
+    });
+
+    it('shows the server limit and sends a ~300 MB ZIP (over the old 50 MB cap)', async () => {
+      mockApi(routes());
+      const xhr = installFakeXhr(() => ({ status: 201, body: scan({ id: 's9' }) }));
+      renderApp('/projects/p1');
+      expect(await screen.findByText(/Max 512 MB\./)).toBeInTheDocument();
+      const input = screen.getByLabelText(/drop a project zip/i);
+      await userEvent.upload(input, zipOf(300 * MiB));
+      await screen.findByText('Uploading…');
+      expect(xhr.sent).toHaveLength(1);
+    });
+
+    it('rejects a ZIP over the server limit before uploading, stating the limit', async () => {
+      mockApi(routes());
+      const xhr = installFakeXhr(() => ({ status: 201, body: {} }));
+      renderApp('/projects/p1');
+      await screen.findByText(/Max 512 MB\./);
+      await userEvent.upload(screen.getByLabelText(/drop a project zip/i), zipOf(600 * MiB));
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        '"project.zip" is 600 MB; the upload limit is 512 MB.',
+      );
+      expect(xhr.sent).toHaveLength(0);
+    });
+  });
 });

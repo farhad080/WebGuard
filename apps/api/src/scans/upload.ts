@@ -37,8 +37,29 @@ async function hasZipSignature(filePath: string): Promise<boolean> {
  */
 export function zipUpload(): RequestHandler {
   return (req, res, next) => {
+    // A large upload on a slow link legitimately takes minutes. The server-wide
+    // requestTimeout is raised to UPLOAD_TIMEOUT_MS (see configureServerTimeouts); this also
+    // drops a connection that stalls (sends nothing) for that long.
+    const timeoutMs = config.uploadTimeoutMs;
+    const onIdle = () => {
+      if (!res.headersSent) {
+        res.status(408).json({
+          error: `Upload timed out after ${Math.round(timeoutMs / 1000)} s (UPLOAD_TIMEOUT_MS)`,
+        });
+      }
+      req.destroy();
+    };
+    req.setTimeout(timeoutMs, onIdle);
+    // The timeout lives on the (possibly keep-alive) socket: remove it once this request ends.
+    res.once('close', () => {
+      req.socket?.removeListener('timeout', onIdle);
+      req.socket?.setTimeout(0);
+    });
+
+    const limitMb = config.maxUploadMb;
     const upload = multer({
       dest: UPLOAD_TMP_DIR,
+      // Multipart is streamed to disk by multer, never buffered by a body parser.
       limits: { fileSize: config.maxUploadBytes, files: 1, fields: 5, parts: 6 },
       fileFilter: (_req, file, cb) => {
         const isZipName = path.extname(file.originalname).toLowerCase() === '.zip';
@@ -53,7 +74,11 @@ export function zipUpload(): RequestHandler {
     upload(req, res, (err: unknown) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-          res.status(413).json({ error: `File exceeds the ${config.maxUploadBytes}-byte limit` });
+          res.status(413).json({
+            error: `File exceeds the ${limitMb} MB upload limit (MAX_UPLOAD_MB)`,
+            limitMb,
+            limitBytes: config.maxUploadBytes,
+          });
         } else if (err instanceof multer.MulterError || err instanceof UploadRejected) {
           res.status(400).json({
             error: err instanceof UploadRejected ? err.message : 'Invalid upload',

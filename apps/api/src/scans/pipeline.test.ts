@@ -130,14 +130,14 @@ describe('POST /api/projects/:id/scans (upload)', () => {
   });
 
   it('rejects uploads over the size limit with 413', async () => {
-    const previous = process.env.MAX_UPLOAD_BYTES;
-    process.env.MAX_UPLOAD_BYTES = '100';
+    const previous = process.env.MAX_UPLOAD_MB;
+    process.env.MAX_UPLOAD_MB = '0.0001';
     try {
       const res = await uploadFixture('valid-site.zip');
       expect(res.status).toBe(413);
     } finally {
-      if (previous === undefined) delete process.env.MAX_UPLOAD_BYTES;
-      else process.env.MAX_UPLOAD_BYTES = previous;
+      if (previous === undefined) delete process.env.MAX_UPLOAD_MB;
+      else process.env.MAX_UPLOAD_MB = previous;
     }
     expect(await prisma.scan.count()).toBe(0);
   });

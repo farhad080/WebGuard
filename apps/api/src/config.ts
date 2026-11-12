@@ -20,6 +20,23 @@ function positiveNumber(name: string, fallback: number): number {
 
 const MiB = 1024 * 1024;
 
+/**
+ * Reads `name`, falling back to the deprecated `legacyName` (same meaning, different unit
+ * via `legacyScale`) so older .env files keep working, then to `fallback`.
+ */
+function positiveNumberWithLegacy(
+  name: string,
+  legacyName: string,
+  fallback: number,
+  legacyScale = 1,
+): number {
+  const raw = process.env[name];
+  if (raw !== undefined && raw !== '') return positiveNumber(name, fallback);
+  const legacy = process.env[legacyName];
+  if (legacy !== undefined && legacy !== '') return positiveNumber(legacyName, 0) / legacyScale;
+  return fallback;
+}
+
 // Getters read the environment lazily so tests and entrypoints can set it first.
 export const config = {
   get port(): number {
@@ -45,8 +62,20 @@ export const config = {
   get storageDir(): string {
     return path.resolve(process.env.STORAGE_DIR ?? 'storage');
   },
+  /** Upload size cap in MB (MAX_UPLOAD_MB, default 512; legacy MAX_UPLOAD_BYTES honored). */
+  get maxUploadMb(): number {
+    return positiveNumberWithLegacy('MAX_UPLOAD_MB', 'MAX_UPLOAD_BYTES', 512, MiB);
+  },
   get maxUploadBytes(): number {
-    return positiveNumber('MAX_UPLOAD_BYTES', 50 * MiB);
+    return Math.floor(this.maxUploadMb * MiB);
+  },
+  /**
+   * How long one HTTP request may take to arrive in full (UPLOAD_TIMEOUT_MS, default 10 min),
+   * so a slow multi-hundred-MB upload is not cut off. Applied as the server's requestTimeout
+   * and as the upload route's socket idle timeout.
+   */
+  get uploadTimeoutMs(): number {
+    return positiveNumber('UPLOAD_TIMEOUT_MS', 10 * 60_000);
   },
 
   /** Origins allowed to call the API cross-origin (CORS_ORIGIN, comma-separated; default APP_BASE_URL). */
@@ -124,9 +153,19 @@ export const config = {
 
   get extraction() {
     return {
-      maxTotalBytes: positiveNumber('EXTRACT_MAX_TOTAL_BYTES', 500 * MiB),
-      maxFiles: positiveNumber('EXTRACT_MAX_FILES', 20_000),
-      maxCompressionRatio: positiveNumber('EXTRACT_MAX_COMPRESSION_RATIO', 100),
+      // Zip-bomb guard. MAX_EXTRACTED_* / MAX_COMPRESSION_RATIO; the older EXTRACT_* names
+      // are still honored when the new ones are unset.
+      maxTotalBytes: Math.floor(
+        positiveNumberWithLegacy('MAX_EXTRACTED_MB', 'EXTRACT_MAX_TOTAL_BYTES', 2048, MiB) * MiB,
+      ),
+      maxFiles: Math.floor(
+        positiveNumberWithLegacy('MAX_EXTRACTED_FILES', 'EXTRACT_MAX_FILES', 60_000),
+      ),
+      maxCompressionRatio: positiveNumberWithLegacy(
+        'MAX_COMPRESSION_RATIO',
+        'EXTRACT_MAX_COMPRESSION_RATIO',
+        200,
+      ),
       ratioCheckMinBytes: positiveNumber('EXTRACT_RATIO_CHECK_MIN_BYTES', 1 * MiB),
     };
   },

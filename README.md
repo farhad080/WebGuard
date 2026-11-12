@@ -100,7 +100,7 @@ Each stage is described below:
 
 ```
 POST /api/projects/:id/scans  (multipart, field "file")
-  → validate upload   .zip name + application/zip MIME + "PK" magic bytes, ≤ MAX_UPLOAD_BYTES (50 MB)
+  → validate upload   .zip name + application/zip MIME + "PK" magic bytes, ≤ MAX_UPLOAD_MB (512 MB)
   → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
   → queue             BullMQ job { scanId } on Redis; scan status = queued
   → worker            status = running → safe-extract → artifacts(kind = extracted)
@@ -125,11 +125,59 @@ Clients poll `GET /api/scans/:id` to follow `queued → running → completed | 
 - **Blocks zip-slip / path traversal:** every entry path is resolved and must stay inside
   the per-scan temp directory. `..` segments, absolute paths, drive letters, backslashes,
   `:` (alternate data streams), and reserved device names are rejected, and the scan fails.
-- **Blocks zip bombs:** caps entry count (`EXTRACT_MAX_FILES`, 20,000), total uncompressed
-  size (`EXTRACT_MAX_TOTAL_BYTES`, 500 MB, checked against both declared sizes and the bytes
-  actually written), and per-entry compression ratio (`EXTRACT_MAX_COMPRESSION_RATIO`, 100:1).
+- **Blocks zip bombs:** caps entry count (`MAX_EXTRACTED_FILES`, 60,000), total uncompressed
+  size (`MAX_EXTRACTED_MB`, 2048 MB, checked against both declared sizes and the bytes
+  actually written), and per-entry compression ratio (`MAX_COMPRESSION_RATIO`, 200:1).
 - **Never materializes symlinks or special files:** symlinks, devices, FIFOs, and encrypted
   entries are skipped. Files are created exclusively (`wx`), so duplicates can't overwrite.
+
+### Limits & configuration
+
+Every upload and extraction limit is read from the environment (no rebuild needed; the
+API and worker pick up a change on restart). Defaults fit projects of a few hundred MB:
+
+| Variable                | Default         | What it limits                                                                                             |
+| ----------------------- | --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `MAX_UPLOAD_MB`         | 512             | Size of the uploaded ZIP. Over it → `413 {"error":"File exceeds the 512 MB upload limit …","limitMb":512}` |
+| `UPLOAD_TIMEOUT_MS`     | 600000 (10 min) | How long one upload request may take to arrive (Node `requestTimeout`) and may stall on the upload route   |
+| `MAX_EXTRACTED_MB`      | 2048            | Total uncompressed size of the archive                                                                     |
+| `MAX_EXTRACTED_FILES`   | 60000           | Entries (files + directories) in the archive                                                               |
+| `MAX_COMPRESSION_RATIO` | 200             | Uncompressed:compressed ratio of any entry of 1 MB or more                                                 |
+
+- The multipart upload is streamed to disk by multer; the JSON body parser (100 kB) only
+  handles `application/json`, so it never caps an upload.
+- The SPA reads the upload cap from `GET /api/limits` and refuses a larger file before
+  sending it; the server enforces the same cap regardless.
+- Hitting an extraction cap fails the scan cleanly (`status: failed`, the reason in
+  `summary_json.error`, e.g. `Archive exceeds the maximum uncompressed size (2048 MB;
+MAX_EXTRACTED_MB)`) and removes the partial extraction. Zip-slip checks are unaffected
+  by any of these settings.
+- A large project also needs time and memory to analyze: see `SCAN_TIMEOUT_MS` and
+  `SCAN_MAX_HEAP_MB` below. Only files up to `ANALYSIS_MAX_FILE_BYTES` (1 MB) are parsed, so
+  big binaries in the archive cost disk and extraction time, not analysis time.
+- The older byte-based names (`MAX_UPLOAD_BYTES`, `EXTRACT_MAX_TOTAL_BYTES`,
+  `EXTRACT_MAX_FILES`, `EXTRACT_MAX_COMPRESSION_RATIO`) still work when the new ones are unset.
+
+**Development proxy.** The Vite dev/preview proxy (`/api` → the API) has no body-size limit,
+and the Vite server's own request timeout is raised to `UPLOAD_TIMEOUT_MS`, so nothing extra
+is needed locally.
+
+**Production reverse proxy (nginx).** nginx rejects request bodies over 1 MB by default
+(`413 Request Entity Too Large`, before the request reaches the API) and gives up on slow
+uploads after 60 s. Raise both to match the API (not part of this repo):
+
+```nginx
+location /api/ {
+    proxy_pass http://webguard_api;
+    client_max_body_size  512m;   # ≥ MAX_UPLOAD_MB
+    client_body_timeout   600s;   # ≈ UPLOAD_TIMEOUT_MS
+    proxy_read_timeout    600s;
+    proxy_send_timeout    600s;
+    proxy_request_buffering off;  # stream the upload to the API instead of spooling it first
+}
+```
+
+Other proxies have equivalents (e.g. a load balancer's maximum request size and idle timeout).
 
 ## Scanner hardening
 
@@ -748,30 +796,30 @@ detector id + file path + whitespace-normalized code, or the line range when the
 All settings come from environment variables. Locally they're read from the repo-root `.env`;
 see `.env.example`.
 
-| Variable                                                                          | Default                                 | Purpose                                                            |
-| --------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
-| `JWT_SECRET`                                                                      | (required)                              | HS256 signing secret (tokens expire after 1 h)                     |
-| `PORT`                                                                            | `3000`                                  | API port                                                           |
-| `DATABASE_URL` / `TEST_DATABASE_URL`                                              | —                                       | Postgres for the app / the test suite (name must end in `_test`)   |
-| `REDIS_URL` / `SCAN_QUEUE_NAME`                                                   | `redis://localhost:6379` / `scans`      | BullMQ connection and queue                                        |
-| `STORAGE_DIR`                                                                     | `./storage`                             | Local `StorageService` root (relative to `apps/api`); never served |
-| `MAX_UPLOAD_BYTES`                                                                | 50 MB                                   | Upload size cap                                                    |
-| `EXTRACT_MAX_FILES` / `EXTRACT_MAX_TOTAL_BYTES` / `EXTRACT_MAX_COMPRESSION_RATIO` | 20,000 / 500 MB / 100                   | Zip-bomb limits                                                    |
-| `ANALYSIS_MAX_FILE_BYTES`                                                         | 1 MB                                    | Larger files are profiled but not parsed                           |
-| `SCAN_TIMEOUT_MS`                                                                 | 600000                                  | Wall-clock limit per scan job                                      |
-| `SCAN_MAX_HEAP_MB`                                                                | 1024                                    | Heap cap for the analysis thread                                   |
-| `OFFLINE`                                                                         | `false`                                 | `true` disables every outbound call (overrides the next two)       |
-| `OSV_ADVISORIES`                                                                  | `false`                                 | Opt-in live OSV.dev dependency advisories                          |
-| `REMEDIATION_LLM` / `ANTHROPIC_API_KEY` / `REMEDIATION_LLM_MODEL`                 | `false` / — / SDK default               | Opt-in LLM-drafted secure examples                                 |
-| `CHROMIUM_PATH`                                                                   | auto-detected                           | Preinstalled Chromium/Chrome for PDF reports and e2e               |
-| `REPORT_PDF_WAIT_MS` / `REPORT_PDF_ON_COMPLETE`                                   | 60000 / `true`                          | PDF request wait; pre-render on completion                         |
-| `APP_BASE_URL`                                                                    | `http://localhost:5173`                 | SPA URL (password-reset links, default CORS origin)                |
-| `CORS_ORIGIN`                                                                     | `APP_BASE_URL`                          | Comma-separated origins allowed cross-origin                       |
-| `TRUST_PROXY`                                                                     | unset                                   | Express `trust proxy` value when behind a reverse proxy            |
-| `AUTH_RATE_LIMIT` / `UPLOAD_RATE_LIMIT`                                           | 30 per 15 min / 30 per hour             | Abuse limits (per IP / per user)                                   |
-| `VITE_API_BASE_URL` / `VITE_API_PROXY_TARGET`                                     | same origin / `http://localhost:$PORT`  | SPA API base and Vite dev-proxy target                             |
-| `E2E_API_PORT` / `E2E_BASE_URL`                                                   | `3100` / `http://localhost:5173`        | Ports used by `npm run e2e`                                        |
-| `DEMO_EMAIL` / `DEMO_PASSWORD`                                                    | `demo@webguard.local` / `webguard-demo` | Seeded demo account                                                |
+| Variable                                                             | Default                                 | Purpose                                                                 |
+| -------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------- |
+| `JWT_SECRET`                                                         | (required)                              | HS256 signing secret (tokens expire after 1 h)                          |
+| `PORT`                                                               | `3000`                                  | API port                                                                |
+| `DATABASE_URL` / `TEST_DATABASE_URL`                                 | —                                       | Postgres for the app / the test suite (name must end in `_test`)        |
+| `REDIS_URL` / `SCAN_QUEUE_NAME`                                      | `redis://localhost:6379` / `scans`      | BullMQ connection and queue                                             |
+| `STORAGE_DIR`                                                        | `./storage`                             | Local `StorageService` root (relative to `apps/api`); never served      |
+| `MAX_UPLOAD_MB` / `UPLOAD_TIMEOUT_MS`                                | 512 / 600000                            | Upload size cap / upload time limit ([details](#limits--configuration)) |
+| `MAX_EXTRACTED_FILES` / `MAX_EXTRACTED_MB` / `MAX_COMPRESSION_RATIO` | 60,000 / 2048 MB / 200                  | Zip-bomb limits ([details](#limits--configuration))                     |
+| `ANALYSIS_MAX_FILE_BYTES`                                            | 1 MB                                    | Larger files are profiled but not parsed                                |
+| `SCAN_TIMEOUT_MS`                                                    | 600000                                  | Wall-clock limit per scan job                                           |
+| `SCAN_MAX_HEAP_MB`                                                   | 1024                                    | Heap cap for the analysis thread                                        |
+| `OFFLINE`                                                            | `false`                                 | `true` disables every outbound call (overrides the next two)            |
+| `OSV_ADVISORIES`                                                     | `false`                                 | Opt-in live OSV.dev dependency advisories                               |
+| `REMEDIATION_LLM` / `ANTHROPIC_API_KEY` / `REMEDIATION_LLM_MODEL`    | `false` / — / SDK default               | Opt-in LLM-drafted secure examples                                      |
+| `CHROMIUM_PATH`                                                      | auto-detected                           | Preinstalled Chromium/Chrome for PDF reports and e2e                    |
+| `REPORT_PDF_WAIT_MS` / `REPORT_PDF_ON_COMPLETE`                      | 60000 / `true`                          | PDF request wait; pre-render on completion                              |
+| `APP_BASE_URL`                                                       | `http://localhost:5173`                 | SPA URL (password-reset links, default CORS origin)                     |
+| `CORS_ORIGIN`                                                        | `APP_BASE_URL`                          | Comma-separated origins allowed cross-origin                            |
+| `TRUST_PROXY`                                                        | unset                                   | Express `trust proxy` value when behind a reverse proxy                 |
+| `AUTH_RATE_LIMIT` / `UPLOAD_RATE_LIMIT`                              | 30 per 15 min / 30 per hour             | Abuse limits (per IP / per user)                                        |
+| `VITE_API_BASE_URL` / `VITE_API_PROXY_TARGET`                        | same origin / `http://localhost:$PORT`  | SPA API base and Vite dev-proxy target                                  |
+| `E2E_API_PORT` / `E2E_BASE_URL`                                      | `3100` / `http://localhost:5173`        | Ports used by `npm run e2e`                                             |
+| `DEMO_EMAIL` / `DEMO_PASSWORD`                                       | `demo@webguard.local` / `webguard-demo` | Seeded demo account                                                     |
 
 ## Status
 

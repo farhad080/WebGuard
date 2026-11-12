@@ -33,6 +33,14 @@ export function ProjectDetailPage() {
     refetchInterval: (q) => (q.state.data?.some(active) ? 3000 : false),
   });
 
+  // The server's real upload cap; if this fails the server still enforces it (413).
+  const limits = useQuery({
+    queryKey: ['limits'],
+    queryFn: () => api.limits(),
+    staleTime: Infinity,
+    retry: false,
+  });
+
   const upload = (file: File) => {
     setUploadError(null);
     setProgress(0);
@@ -76,6 +84,7 @@ export function ProjectDetailPage() {
           disabled={progress !== null}
           progress={progress}
           error={uploadError}
+          maxUploadMb={limits.data?.maxUploadMb}
         />
         {progress !== null && progress < 1 && (
           <button

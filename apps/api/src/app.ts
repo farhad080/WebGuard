@@ -1,4 +1,5 @@
 import cors from 'cors';
+import type { Server } from 'node:http';
 import express, { type Express } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import helmet from 'helmet';
@@ -40,10 +41,20 @@ export function createApp(options: AppOptions = {}): Express {
     }),
   );
 
+  // JSON bodies only (Content-Type: application/json), capped small. Multipart ZIP uploads
+  // are not touched here: they stream through multer on the upload route (MAX_UPLOAD_MB).
   app.use(express.json({ limit: '100kb' }));
 
   app.get('/api/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
+  });
+
+  // Public, non-sensitive limits so the SPA's uploader validates against the real cap.
+  app.get('/api/limits', (_req, res) => {
+    res.status(200).json({
+      maxUploadMb: config.maxUploadMb,
+      maxUploadBytes: config.maxUploadBytes,
+    });
   });
 
   // Brute-force / abuse protection: credential-handling auth endpoints, per client IP.
@@ -82,4 +93,15 @@ export function createApp(options: AppOptions = {}): Express {
   app.use(errorHandler);
 
   return app;
+}
+
+/**
+ * Node's HTTP server drops any request that takes longer than `requestTimeout` (default
+ * 5 min) to arrive, which would cut off a slow multi-hundred-MB upload. Raise it to
+ * UPLOAD_TIMEOUT_MS. Headers must still arrive within `headersTimeout` (60 s), so
+ * slow-header (slowloris) clients are still dropped quickly.
+ */
+export function configureServerTimeouts(server: Server): Server {
+  server.requestTimeout = config.uploadTimeoutMs;
+  return server;
 }
