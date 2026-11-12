@@ -242,6 +242,8 @@ describe('GET /api/scans/:id/report.pdf', () => {
       expect(again.status).toBe(200);
       expect(await prisma.artifact.count({ where: { scanId, kind: 'report' } })).toBe(1);
     },
+    // A cold headless Chrome on a shared CI runner can take well over 15 s to print.
+    120_000,
   );
 });
 

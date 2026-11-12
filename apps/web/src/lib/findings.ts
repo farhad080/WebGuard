@@ -94,7 +94,8 @@ export function languageForPath(path: string): string {
     tsx: 'typescript',
     mts: 'typescript',
     cts: 'typescript',
-    json: 'json',
+    // Monaco's JSON highlighting ships with its language service (not loaded); JS reads fine.
+    json: 'javascript',
     html: 'html',
     htm: 'html',
     css: 'css',

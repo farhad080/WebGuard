@@ -28,6 +28,8 @@ export default defineConfig({
       STORAGE_DIR: path.join(os.tmpdir(), 'webguard-test-storage'),
       // PDFs are rendered on request in tests (deterministic); the worker's proactive render is off.
       REPORT_PDF_ON_COMPLETE: 'false',
+      // Let the PDF endpoint wait for a slow (cold CI) Chrome instead of answering 202.
+      REPORT_PDF_WAIT_MS: '100000',
       // Rate limits are exercised by dedicated tests with their own app instances.
       AUTH_RATE_LIMIT: '100000',
       UPLOAD_RATE_LIMIT: '100000',

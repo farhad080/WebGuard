@@ -30,13 +30,13 @@ export interface RunAnalysisThreadOptions {
 }
 
 /** In development/tests this module runs from .ts (via tsx); in production from compiled .js. */
-function defaultEntry(): { entry: URL; execArgv: string[] } {
+function defaultEntry(): URL {
   const fromSource = import.meta.url.endsWith('.ts');
-  return {
-    entry: new URL(fromSource ? './analysis-thread.ts' : './analysis-thread.js', import.meta.url),
-    execArgv: fromSource ? ['--import', 'tsx'] : [],
-  };
+  return new URL(fromSource ? './analysis-thread.ts' : './analysis-thread.js', import.meta.url);
 }
+
+/** A .ts entry is started through a bootstrap that registers tsx inside the thread. */
+const TS_BOOTSTRAP = new URL('./ts-thread-bootstrap.mjs', import.meta.url);
 
 /**
  * Runs a scan's analysis in a worker thread with a hard heap limit and a wall-clock timeout.
@@ -48,9 +48,8 @@ export function runAnalysisInThread(
   options: RunAnalysisThreadOptions,
 ): Promise<AnalysisOutput> {
   const { timeoutMs, maxHeapMb } = options;
-  const defaults = defaultEntry();
-  const entry = options.entry ?? defaults.entry;
-  const execArgv = entry.pathname.endsWith('.ts') ? ['--import', 'tsx'] : defaults.execArgv;
+  const entry = options.entry ?? defaultEntry();
+  const isTs = entry.pathname.endsWith('.ts');
   const workerData: AnalysisThreadInput = {
     ...input,
     deadline: Date.now() + timeoutMs,
@@ -59,9 +58,8 @@ export function runAnalysisInThread(
   };
 
   return new Promise<AnalysisOutput>((resolve, reject) => {
-    const worker = new Worker(entry, {
-      workerData,
-      execArgv,
+    const worker = new Worker(isTs ? TS_BOOTSTRAP : entry, {
+      workerData: isTs ? { ...workerData, __tsEntry: entry.href } : workerData,
       resourceLimits: { maxOldGenerationSizeMb: maxHeapMb },
       stdout: false,
       stderr: false,

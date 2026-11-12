@@ -23,34 +23,41 @@ import { ChartTooltip } from './ChartTooltip';
 export function RiskTrend({ scans }: { scans: Scan[] }) {
   const theme = useChartTheme();
   const [table, setTable] = useState(false);
-  const points = scans
+  const completed = scans
     .filter((s) => s.status === 'completed' && s.summary?.rollup)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-    .map((s, i, all) => ({
-      id: s.id,
-      label: new Date(s.createdAt).toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-      }),
-      when: formatDateTime(s.createdAt),
-      score: s.summary!.rollup!.riskScore,
-      grade: s.summary!.rollup!.grade,
-      total: s.summary!.rollup!.total,
-      last: i === all.length - 1 ? s.summary!.rollup!.grade : undefined,
-    }));
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  // Several scans on one day would share a "Nov 12" tick; add the time when days repeat.
+  const days = completed.map((s) => new Date(s.createdAt).toDateString());
+  const withTime = new Set(days).size < days.length;
+  const points = completed.map((s, i, all) => ({
+    id: s.id,
+    label: new Date(s.createdAt).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
+    }),
+    when: formatDateTime(s.createdAt),
+    score: s.summary!.rollup!.riskScore,
+    grade: s.summary!.rollup!.grade,
+    total: s.summary!.rollup!.total,
+    last: i === all.length - 1 ? s.summary!.rollup!.grade : undefined,
+  }));
 
   return (
     <section className="card chart-card" aria-labelledby="trend-title">
       <header className="chart-head">
         <h3 id="trend-title">Risk score over time</h3>
-        <button
-          type="button"
-          className="btn btn-small btn-ghost"
-          aria-pressed={table}
-          onClick={() => setTable((t) => !t)}
-        >
-          {table ? 'Chart' : 'Table'}
-        </button>
+        {/* With fewer than two points there is no line to draw: the table is the only view. */}
+        {points.length > 1 && (
+          <button
+            type="button"
+            className="btn btn-small btn-ghost"
+            aria-pressed={table}
+            onClick={() => setTable((t) => !t)}
+          >
+            {table ? 'Chart' : 'Table'}
+          </button>
+        )}
       </header>
       {points.length === 0 ? (
         <p className="muted">No completed scans yet.</p>

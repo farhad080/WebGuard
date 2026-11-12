@@ -73,8 +73,9 @@ function CompareResult({ data }: { data: ScanComparison }) {
         <div className="stat-tile">
           <span className="stat-label">Fixed</span>
           <span className="stat-value">{summary.fixed}</span>
-          <span className="delta delta-good">
-            <span aria-hidden="true">✓</span> resolved since the baseline
+          <span className={`delta ${summary.fixed > 0 ? 'delta-good' : 'delta-flat'}`}>
+            <span aria-hidden="true">{summary.fixed > 0 ? '✓' : '＝'}</span> resolved since the
+            baseline
           </span>
         </div>
         <div className="stat-tile">
