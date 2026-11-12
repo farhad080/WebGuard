@@ -18,6 +18,7 @@ import {
 import type { ParseErrorSample, ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
 import { AnthropicRemediationProvider } from '../remediation/anthropic-provider.js';
+import { computeRollup } from '../reports/rollup.js';
 import { prisma } from '../db.js';
 import { ExtractionError, ExtractorService, type ExtractionLimits } from './extractor.js';
 import { getStorage, storageKeys, uploadDirectory, type StorageService } from './storage.js';
@@ -150,12 +151,26 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
             })),
           });
         }
+        // Authoritative rollup + risk grade, computed from the rows just persisted, so the
+        // dashboard and every report read the same numbers.
+        const persisted = await tx.finding.findMany({
+          where: { scanId },
+          select: { severity: true, owaspCategory: true, confidence: true },
+        });
+        const rollup = computeRollup(persisted);
+        const finalSummary: ScanSummary = {
+          ...summary,
+          rollup,
+          findingsTotal: rollup.total,
+          findingsBySeverity: rollup.bySeverity,
+          findingsByOwaspCategory: rollup.byOwaspCategory,
+        };
         await tx.scan.updateMany({
           where: { id: scanId },
           data: {
             status: 'completed',
             finishedAt: new Date(),
-            summaryJson: summary as unknown as Prisma.InputJsonObject,
+            summaryJson: finalSummary as unknown as Prisma.InputJsonObject,
           },
         });
       },

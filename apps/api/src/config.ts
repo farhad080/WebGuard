@@ -58,6 +58,19 @@ export const config = {
     };
   },
 
+  /** Preinstalled Chromium for PDF reports (auto-detected when unset; never downloaded). */
+  get chromiumPath(): string | undefined {
+    return process.env.CHROMIUM_PATH || undefined;
+  },
+  /** How long GET report.pdf waits for the worker before answering 202 (default 60 s). */
+  get reportPdfWaitMs(): number {
+    return positiveNumber('REPORT_PDF_WAIT_MS', 60_000);
+  },
+  /** Pre-render the PDF report when a scan completes (default on). */
+  get reportPdfOnComplete(): boolean {
+    return process.env.REPORT_PDF_ON_COMPLETE !== 'false';
+  },
+
   /** Source files larger than this are profiled but not parsed (minified/generated code). */
   get analysisMaxFileBytes(): number {
     return positiveNumber('ANALYSIS_MAX_FILE_BYTES', 1 * MiB);

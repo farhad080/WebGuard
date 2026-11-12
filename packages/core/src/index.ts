@@ -139,6 +139,50 @@ export interface ParseErrorSample {
 }
 
 /** Written by the worker. Detector results are a placeholder until detection exists. */
+export type RiskGrade = 'A' | 'B' | 'C' | 'D' | 'F';
+
+/** Per-scan severity/OWASP rollup and risk grade, computed from the persisted findings. */
+export interface ScanRollup {
+  total: number;
+  bySeverity: Record<Severity, number>;
+  byOwaspCategory: Partial<Record<OwaspCategory, number>>;
+  /** 0 (no risk found) – 100 (severe). See `RISK_MODEL` in the API for the weighting. */
+  riskScore: number;
+  grade: RiskGrade;
+  /** Σ severityWeight × confidence over all findings (the input to riskScore). */
+  weightedRisk: number;
+  /** Why the grade is what it is, e.g. "capped at D: 3 high-confidence critical findings". */
+  gradeReason: string;
+  computedAt: IsoDateString;
+}
+
+export interface ScanReport {
+  reportVersion: 1;
+  generatedAt: IsoDateString;
+  project: { id: string; name: string };
+  scan: {
+    id: string;
+    status: ScanStatus;
+    createdAt: IsoDateString;
+    startedAt: IsoDateString | null;
+    finishedAt: IsoDateString | null;
+  };
+  profile: {
+    languages: LanguageStat[];
+    frameworks: DetectedFramework[];
+    sourceFiles: number;
+    filesParsed: number;
+    parseErrors: number;
+  } | null;
+  rollup: ScanRollup;
+  /** Every finding with its remediation, most severe first. */
+  findings: Finding[];
+  /** Non-code-defect items to review manually (shown, not dropped). */
+  informationalNotes: InformationalNote[];
+  detectors: string[];
+  detectorErrors: DetectorErrorInfo[];
+}
+
 export interface ScanSummary {
   filesExtracted?: number;
   totalBytes?: number;
@@ -161,6 +205,8 @@ export interface ScanSummary {
   detectorErrors?: DetectorErrorInfo[];
   /** Weakness classes that need manual/dynamic review (not findings). */
   informationalNotes?: InformationalNote[];
+  /** Authoritative rollup computed from the persisted findings (dashboard + reports). */
+  rollup?: ScanRollup;
   /** Present when status is `failed`. */
   error?: string;
 }

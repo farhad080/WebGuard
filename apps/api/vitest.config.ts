@@ -26,6 +26,8 @@ export default defineConfig({
       // Isolated from the dev queue and dev storage.
       SCAN_QUEUE_NAME: 'webguard-test-scans',
       STORAGE_DIR: path.join(os.tmpdir(), 'webguard-test-storage'),
+      // PDFs are rendered on request in tests (deterministic); the worker's proactive render is off.
+      REPORT_PDF_ON_COMPLETE: 'false',
     },
     globalSetup: ['./test/global-setup.ts'],
     // Tests share one database and one queue; run files sequentially.

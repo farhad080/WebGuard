@@ -393,6 +393,37 @@ persistence. The result is stored in `findings.remediation_json` (next to the sh
   flagged snippet and the template guidance, never whole files. Without the flag, nothing leaves
   the server, and the templates alone produce complete remediation.
 
+## Reports
+
+**Rollup & risk grade.** When a scan completes, the worker computes the rollup from the
+findings it just persisted, in the same transaction, and stores it as `summary_json.rollup`.
+The dashboard and every report read these same numbers. The rollup holds counts by severity
+and OWASP category, the total, `weightedRisk`, `riskScore` and `grade`:
+
+```
+weightedRisk = Σ weight(severity) × confidence     weights: critical 10, high 5, medium 2, low 0.5, info 0
+riskScore    = round(100 × (1 − e^(−weightedRisk / 25)))
+grade        = A < 10 ≤ B < 25 ≤ C < 50 ≤ D < 75 ≤ F
+```
+
+Any critical finding with confidence ≥ 0.8 caps the grade at D (never better), and
+`gradeReason` explains the result.
+
+**Exports** (all require `Authorization: Bearer`; other users' scans → 404; unfinished scans → 409):
+
+| Endpoint                         | Returns                                                                                                                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/scans/:id/report.json` | The full `ScanReport`: project, scan, profile summary, rollup, every finding (file:line, snippet, OWASP, CWE, severity, confidence, evidence, explanation, remediation), the informational notes (#15/#17/#33/#34), and detector errors. Machine-readable. |
+| `GET /api/scans/:id/report.html` | Self-contained HTML: inline CSS, no scripts, no external assets (CSP `default-src 'none'`). Shows the grade, severity summary, OWASP table, and each finding with an HTML-escaped, syntax-highlighted snippet and its fix.                                 |
+| `GET /api/scans/:id/report.pdf`  | The same report as PDF. Streams the stored file, which is recorded as a `report` artifact.                                                                                                                                                                 |
+
+PDFs are rendered by the **worker**, never on the request thread. The worker pre-renders one
+when a scan completes (`REPORT_PDF_ON_COMPLETE`). If none exists yet, the endpoint queues a
+`report-pdf` job and waits up to `REPORT_PDF_WAIT_MS`, answering `202` with `Retry-After` if the
+worker is still busy. Rendering uses the **preinstalled** Chromium/Chrome via
+`--headless --no-sandbox --print-to-pdf`, located by `CHROMIUM_PATH` or common install paths;
+no browser is downloaded at runtime.
+
 ## Authentication
 
 All auth endpoints live under `/api/auth` and accept/return JSON.
@@ -459,3 +490,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 10. Access-control & input detectors
 - [x] 11. Files, dependencies & misconfig detectors
 - [x] 12. Remediation engine
+- [x] 13. Report builder (JSON / HTML / PDF)

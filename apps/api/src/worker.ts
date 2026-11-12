@@ -4,9 +4,9 @@ import { createScanWorker } from './scans/queue.js';
 const worker = createScanWorker();
 
 worker.on('ready', () => console.log('[worker] waiting for scan jobs'));
-worker.on('completed', (job) => console.log(`[worker] scan ${job.data.scanId} completed`));
+worker.on('completed', (job) => console.log(`[worker] ${job.name} ${job.data.scanId} completed`));
 worker.on('failed', (job, err) =>
-  console.log(`[worker] scan ${job?.data.scanId ?? '?'} failed: ${err.message}`),
+  console.log(`[worker] ${job?.name ?? 'job'} ${job?.data.scanId ?? '?'} failed: ${err.message}`),
 );
 worker.on('error', (err) => console.error('[worker] error', err));
 
