@@ -18,6 +18,8 @@ export interface StorageService {
   exists(key: string): Promise<boolean>;
   /** Lists all keys under a prefix (recursively). */
   list(prefix: string): Promise<string[]>;
+  /** Deletes one object (no-op if it is missing). */
+  delete(key: string): Promise<void>;
   /** Deletes every object under a prefix. */
   deletePrefix(prefix: string): Promise<void>;
 }
@@ -25,6 +27,12 @@ export interface StorageService {
 export class InvalidStorageKeyError extends Error {
   override name = 'InvalidStorageKeyError';
 }
+
+/**
+ * Retries for removals: on Windows a just-written file can be briefly locked (antivirus,
+ * indexer), making a single rm fail with EBUSY/EPERM and leave files behind.
+ */
+export const RM_RETRY = { maxRetries: 5, retryDelay: 200 } as const;
 
 export class LocalStorageService implements StorageService {
   private readonly root: string;
@@ -109,8 +117,12 @@ export class LocalStorageService implements StorageService {
     return keys.sort();
   }
 
+  async delete(key: string): Promise<void> {
+    await rm(this.resolveKey(key), { force: true, ...RM_RETRY });
+  }
+
   async deletePrefix(prefix: string): Promise<void> {
-    await rm(this.resolveKey(prefix), { recursive: true, force: true });
+    await rm(this.resolveKey(prefix), { recursive: true, force: true, ...RM_RETRY });
   }
 }
 
@@ -144,6 +156,8 @@ export function getStorage(): StorageService {
 }
 
 export const storageKeys = {
+  /** Everything stored for a scan (upload, extracted tree, reports). */
+  scanRoot: (scanId: string) => `scans/${scanId}`,
   rawZip: (scanId: string) => `scans/${scanId}/raw.zip`,
   extracted: (scanId: string) => `scans/${scanId}/extracted`,
 };

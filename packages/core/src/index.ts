@@ -263,6 +263,38 @@ export interface Finding {
   createdAt: IsoDateString;
 }
 
+/** One side of a scan comparison. */
+export interface ScanRef {
+  id: string;
+  createdAt: IsoDateString;
+  finishedAt: IsoDateString | null;
+  rollup: ScanRollup | null;
+}
+
+/**
+ * GET /api/scans/:id/compare?against=:baselineId — how `scan` differs from `against`.
+ * Findings are matched by a stable fingerprint (detector + file + normalized code), so a
+ * finding that only moved lines still counts as persisting.
+ */
+export interface ScanComparison {
+  scan: ScanRef;
+  against: ScanRef;
+  /** In the baseline, gone now. */
+  fixed: Finding[];
+  /** Not in the baseline. */
+  new: Finding[];
+  /** Still open: the current finding and its baseline counterpart. */
+  persisting: { finding: Finding; previous: Finding }[];
+  summary: {
+    fixed: number;
+    new: number;
+    persisting: number;
+    /** Current minus baseline (negative = fewer findings / less risk). */
+    totalDelta: number;
+    riskScoreDelta: number | null;
+  };
+}
+
 export interface RemediationReference {
   title: string;
   url: string;

@@ -44,3 +44,60 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  e2e:
+    # Full product flow in a real browser against the real stack (API + worker + web).
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: webguard
+          POSTGRES_PASSWORD: webguard
+          POSTGRES_DB: webguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U webguard"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://webguard:webguard@localhost:5432/webguard
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-jwt-secret
+      APP_BASE_URL: http://localhost:5173
+      # Scans never need the network; CI proves it.
+      OFFLINE: 'true'
+      # The runner's preinstalled Chrome (Playwright browsers are never downloaded).
+      CHROMIUM_PATH: /usr/bin/google-chrome
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - name: Seed the demo (proves a fresh clone can seed)
+        run: npm run seed:demo -- --no-scan
+      - run: npm run e2e
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: apps/web/test-results
+          retention-days: 7

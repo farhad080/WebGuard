@@ -62,6 +62,11 @@ export function ProjectDetailPage() {
       </nav>
       <div className="page-head">
         <h1>{project.data.name}</h1>
+        {scans.data?.some((s) => s.status === 'completed') && (
+          <Link className="btn btn-secondary" to={`/projects/${projectId}/history`}>
+            History &amp; compare
+          </Link>
+        )}
       </div>
 
       <section className="card" aria-labelledby="upload-title">

@@ -4,6 +4,7 @@ import type {
   Project,
   ProjectWithLastScan,
   Scan,
+  ScanComparison,
   Severity,
 } from '@webguard/core';
 import { ApiError, apiFetch, apiJson } from './client';
@@ -51,6 +52,8 @@ export const api = {
     return apiJson<Finding[]>(`/api/scans/${enc(scanId)}/findings${qs ? `?${qs}` : ''}`);
   },
   getFinding: (id: string) => apiJson<Finding>(`/api/findings/${enc(id)}`),
+  compareScans: (scanId: string, againstId: string) =>
+    apiJson<ScanComparison>(`/api/scans/${enc(scanId)}/compare?against=${enc(againstId)}`),
   getSource: (scanId: string, path: string) =>
     apiJson<string>(`/api/scans/${enc(scanId)}/source?path=${enc(path)}`),
 

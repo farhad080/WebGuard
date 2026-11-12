@@ -1261,3 +1261,25 @@ dd {
     forced-color-adjust: none;
   }
 }
+
+/* ---------- history & compare ---------- */
+
+.compare-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.compare-pickers select {
+  width: 100%;
+}
+.compare-arrow {
+  font-size: 1.3rem;
+  color: var(--muted);
+  padding-bottom: 6px;
+}
+.scan-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

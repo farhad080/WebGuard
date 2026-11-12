@@ -4,53 +4,68 @@ import path from 'node:path';
 import type { Prisma } from '@prisma/client';
 import {
   countFindings,
-  createDefaultDetectorRegistry,
-  createDetectionContext,
-  dedupeFindings,
-  DetectionEngine,
-  parseSourceFiles,
   INFORMATIONAL_NOTES,
-  ProfilerService,
-  RemediationService,
   type DetectorRegistry,
-  type ParsedFile,
+  type RemediationService,
 } from '@webguard/analysis';
-import type { ParseErrorSample, ScanSummary } from '@webguard/core';
+import type { ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
-import { AnthropicRemediationProvider } from '../remediation/anthropic-provider.js';
 import { computeRollup } from '../reports/rollup.js';
 import { prisma } from '../db.js';
+import {
+  analyzeProject,
+  buildDetectorRegistry,
+  buildRemediation,
+  ScanLimitError,
+  type AnalysisOutput,
+} from './analyze.js';
 import { ExtractionError, ExtractorService, type ExtractionLimits } from './extractor.js';
-import { getStorage, storageKeys, uploadDirectory, type StorageService } from './storage.js';
+import { runAnalysisInThread } from './sandbox.js';
+import {
+  getStorage,
+  RM_RETRY,
+  storageKeys,
+  uploadDirectory,
+  type StorageService,
+} from './storage.js';
 
 export interface ProcessScanOptions {
   storage?: StorageService;
   limits?: Partial<ExtractionLimits>;
-  /** Detectors to run (default: every built-in detector). */
+  /**
+   * Detectors to run. Supplying detectors or a remediation service runs the analysis
+   * in-process (with the same cooperative time/memory budget) instead of in the isolated
+   * analysis thread, since live objects can't cross a thread boundary.
+   */
   detectors?: DetectorRegistry;
-  /** Remediation engine (default: deterministic templates, LLM assist per config). */
   remediation?: RemediationService;
+  /** Wall-clock budget for the whole job (default SCAN_TIMEOUT_MS). */
+  timeoutMs?: number;
+  /** Heap cap for the analysis thread (default SCAN_MAX_HEAP_MB). */
+  maxHeapMb?: number;
 }
 
-const MAX_PARSE_ERROR_SAMPLES = 20;
-
-let sharedRemediation: RemediationService | undefined;
-/** Built once: LLM assist only when REMEDIATION_LLM=true and an API key is configured. */
-function defaultRemediation(): RemediationService {
-  if (!sharedRemediation) {
-    const llm = config.remediationLlm;
-    sharedRemediation = new RemediationService({
-      llm: {
-        enabled: llm.enabled,
-        provider:
-          llm.enabled && llm.apiKey
-            ? new AnthropicRemediationProvider(llm.apiKey, llm.model)
-            : undefined,
-      },
-    });
+/** Rejects with a ScanLimitError if `work` is still pending at `deadline`. */
+async function withDeadline<T>(work: Promise<T>, deadline: number, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new ScanLimitError(
+            `Scan exceeded the ${Math.round(timeoutMs / 1000)} s time limit and was stopped`,
+          ),
+        ),
+      Math.max(0, deadline - Date.now()),
+    );
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
   }
-  return sharedRemediation;
 }
+
 const FINDINGS_BATCH_SIZE = 1000;
 
 /**
@@ -68,6 +83,9 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
   });
   if (claimed.count === 0) return;
 
+  const timeoutMs = options.timeoutMs ?? config.scanTimeoutMs;
+  const maxHeapMb = options.maxHeapMb ?? config.scanMaxHeapMb;
+  const deadline = Date.now() + timeoutMs;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `webguard-scan-${scanId}-`));
   try {
     const raw = await prisma.artifact.findFirst({ where: { scanId, kind: 'raw_zip' } });
@@ -77,7 +95,7 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
     const extractDir = path.join(tempDir, 'src');
     await storage.downloadToFile(raw.storageKey, zipPath);
 
-    const result = await extractor.extract(zipPath, extractDir);
+    const result = await withDeadline(extractor.extract(zipPath, extractDir), deadline, timeoutMs);
 
     const extractedKey = storageKeys.extracted(scanId);
     await uploadDirectory(storage, extractDir, extractedKey);
@@ -85,36 +103,33 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       data: { scanId, kind: 'extracted', storageKey: extractedKey },
     });
 
-    // Analysis inputs: profile the project, then parse every supported source file.
-    // A file that fails to parse is recorded and skipped; it never fails the scan.
-    const profile = await new ProfilerService({
-      maxFileBytes: config.analysisMaxFileBytes,
-    }).profile(extractDir);
-    const files: ParsedFile[] = [];
-    let parseErrors = 0;
-    const parseErrorSamples: ParseErrorSample[] = [];
-    for await (const file of parseSourceFiles(extractDir, profile)) {
-      files.push(file);
-      if (file.parseError) {
-        parseErrors++;
-        if (parseErrorSamples.length < MAX_PARSE_ERROR_SAMPLES) {
-          const { message, line, column } = file.parseError;
-          parseErrorSamples.push({ path: file.path, message, line, column });
-        }
-      }
+    // Analysis (profile → parse → detect → remediate) only reads the extracted files.
+    const network = { osv: config.osvAdvisories };
+    let analysis: AnalysisOutput;
+    if (options.detectors || options.remediation) {
+      const maxHeapBytes = maxHeapMb * 1024 * 1024;
+      analysis = await withDeadline(
+        analyzeProject(extractDir, {
+          maxFileBytes: config.analysisMaxFileBytes,
+          detectors: options.detectors ?? buildDetectorRegistry(network),
+          remediation: options.remediation ?? (await buildRemediation(config.remediationLlm)),
+          budget: { deadline, timeoutMs, maxHeapBytes },
+        }),
+        deadline,
+        timeoutMs,
+      );
+    } else {
+      analysis = await runAnalysisInThread(
+        {
+          extractDir,
+          maxFileBytes: config.analysisMaxFileBytes,
+          network,
+          llm: config.remediationLlm,
+        },
+        { timeoutMs: Math.max(1, deadline - Date.now()), maxHeapMb },
+      );
     }
-
-    // Detection: run every registered detector stage by stage, then de-duplicate/correlate.
-    // A failing detector is recorded in detectorErrors; it never fails the scan.
-    const ctx = createDetectionContext({ rootDir: extractDir, profile, files });
-    const engine = new DetectionEngine(options.detectors ?? createDefaultDetectorRegistry());
-    const detection = await engine.run(ctx);
-    // Remediation: attach why/impact, steps, a (contextualized) secure example and references
-    // to every finding before it is persisted.
-    const findings = await (options.remediation ?? defaultRemediation()).enrichFindings(
-      dedupeFindings(detection.findings),
-      ctx,
-    );
+    const { findings, profile } = analysis;
     const counts = countFindings(findings);
 
     const summary: ScanSummary = {
@@ -122,17 +137,14 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       totalBytes: result.totalBytes,
       skippedEntries: result.skippedEntries,
       profile,
-      filesParsed: files.filter((f) => f.ast).length,
-      parseErrors,
-      parseErrorSamples,
-      detectors: detection.executed,
+      filesParsed: analysis.filesParsed,
+      parseErrors: analysis.parseErrors,
+      parseErrorSamples: analysis.parseErrorSamples,
+      detectors: analysis.detectors,
       findingsTotal: counts.total,
       findingsBySeverity: counts.bySeverity,
       findingsByOwaspCategory: counts.byOwaspCategory,
-      detectorErrors: detection.detectorErrors.map(({ detectorId, message }) => ({
-        detectorId,
-        message,
-      })),
+      detectorErrors: analysis.detectorErrors,
       // Documented weakness classes that need manual/dynamic review: shown, not dropped.
       informationalNotes: [...INFORMATIONAL_NOTES],
     };
@@ -177,13 +189,16 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       { timeout: 60_000 },
     );
   } catch (err) {
-    // Archive problems are reported verbatim; anything else gets a generic message so
-    // internal details (paths, stack traces) never reach the client.
-    const message =
-      err instanceof ExtractionError ? err.message : 'Internal error while processing the scan';
-    if (!(err instanceof ExtractionError)) console.error(`[worker] scan ${scanId} failed:`, err);
+    // Archive problems and exceeded limits are reported verbatim; anything else gets a generic
+    // message so internal details (paths, stack traces) never reach the client.
+    const expected = err instanceof ExtractionError || err instanceof ScanLimitError;
+    const message = expected ? (err as Error).message : 'Internal error while processing the scan';
+    if (!expected) console.error(`[worker] scan ${scanId} failed:`, err);
 
     await storage.deletePrefix(storageKeys.extracted(scanId)).catch(() => undefined);
+    await prisma.artifact
+      .deleteMany({ where: { scanId, kind: 'extracted' } })
+      .catch(() => undefined);
     await prisma.scan
       .updateMany({
         where: { id: scanId },
@@ -194,6 +209,21 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       );
     throw err;
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    // The temp dir (raw ZIP copy + extracted tree) never outlives the job, and the stored
+    // upload is no longer needed once the scan has an outcome: the extracted tree (kept for
+    // the code view of a completed scan) and the reports are what remain.
+    await rm(tempDir, { recursive: true, force: true, ...RM_RETRY }).catch((err) =>
+      console.error(`[worker] could not remove temp dir of scan ${scanId}`, err),
+    );
+    await discardRawUpload(scanId, storage);
+  }
+}
+
+async function discardRawUpload(scanId: string, storage: StorageService): Promise<void> {
+  try {
+    await storage.delete(storageKeys.rawZip(scanId));
+    await prisma.artifact.deleteMany({ where: { scanId, kind: 'raw_zip' } });
+  } catch (err) {
+    console.error(`[worker] could not remove the upload of scan ${scanId}`, err);
   }
 }

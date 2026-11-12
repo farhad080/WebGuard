@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../auth/middleware.js';
 import { prisma } from '../db.js';
 import { asyncHandler } from '../middleware/async-handler.js';
-import { enqueueScan } from '../scans/queue.js';
+import { createQueuedScan } from '../scans/create-scan.js';
 import { getStorage, storageKeys } from '../scans/storage.js';
 import { zipUpload } from '../scans/upload.js';
 import { findOwnedProject, parseId } from './ownership.js';
@@ -107,13 +107,27 @@ projectsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const id = parseId(req.params.id);
-    const { count } = id
-      ? await prisma.project.deleteMany({ where: { id, userId: req.user!.id } })
+    const owned = id ? await findOwnedProject(req.user!.id, id) : null;
+    const scans = owned
+      ? await prisma.scan.findMany({ where: { projectId: owned.id }, select: { id: true } })
+      : [];
+    const { count } = owned
+      ? await prisma.project.deleteMany({ where: { id: owned.id, userId: req.user!.id } })
       : { count: 0 };
     if (count === 0) {
       res.status(404).json(notFound);
       return;
     }
+    // Rows cascade in the database; the stored files (upload, extracted tree, reports) are
+    // removed here so nothing of a deleted project stays on disk.
+    const storage = getStorage();
+    await Promise.all(
+      scans.map((s) =>
+        storage
+          .deletePrefix(storageKeys.scanRoot(s.id))
+          .catch((err) => console.error(`[projects] could not delete files of scan ${s.id}`, err)),
+      ),
+    );
     res.status(204).end();
   }),
 );
@@ -136,25 +150,7 @@ projectsRouter.post(
     const project = res.locals.project as Project;
     const file = req.file!;
     try {
-      const scan = await prisma.scan.create({ data: { projectId: project.id } });
-      try {
-        const key = storageKeys.rawZip(scan.id);
-        await getStorage().putFile(key, file.path);
-        await prisma.artifact.create({
-          data: { scanId: scan.id, kind: 'raw_zip', storageKey: key },
-        });
-        await enqueueScan(scan.id);
-      } catch (err) {
-        await prisma.scan.update({
-          where: { id: scan.id },
-          data: {
-            status: 'failed',
-            finishedAt: new Date(),
-            summaryJson: { error: 'Failed to queue scan' },
-          },
-        });
-        throw err;
-      }
+      const scan = await createQueuedScan(project.id, file.path);
       res.status(201).json(toScan(scan));
     } finally {
       await unlink(file.path).catch(() => undefined);

@@ -3,13 +3,50 @@
 Source-code security analysis platform. Upload a website project (ZIP),
 and WebGuard scans the source for OWASP-style vulnerabilities, pinpoints
 the exact file and line, explains the risk, and suggests a secure fix.
+Scans are compared over time, so you can see what was fixed, what is new, and how the risk
+grade trends.
+
+WebGuard is a **static** analyzer. It reads source code and never runs it. Some weakness
+classes need a running application or a human to confirm; see
+[What WebGuard can and cannot detect](#what-webguard-can-and-cannot-detect).
+
+## Quick demo
+
+```bash
+npm install
+npm run demo
+```
+
+`npm run demo` does the following:
+
+- starts Postgres and Redis (`docker compose up -d --wait`)
+- applies the migrations and builds the shared packages
+- **seeds a demo account** and the deliberately vulnerable **Acme Shop** project, and queues
+  a scan of it
+- starts the API, worker and web app
+
+Open http://localhost:5173 and sign in as **`demo@webguard.local` / `webguard-demo`**. Open
+the Acme Shop project and select its scan to see the dashboard, findings, Monaco code view,
+and the HTML/PDF/JSON reports. Ctrl+C stops everything.
+
+The scan finds SQL injection, reflected XSS, a hardcoded Stripe-style secret, MD5 password
+hashing, a vulnerable dependency and a typosquatted one, and server misconfiguration.
+
+- `npm run demo -- --setup` stops after seeding, if you'd rather start the apps yourself.
+- `npm run seed:demo` re-seeds at any time. It resets the demo password and queues another
+  scan, so the History & compare view fills up. It also writes `apps/api/demo/acme-shop.zip`
+  for manual uploads.
+
+Requires Docker and Node 20+. The demo account has a published password, so the seed refuses
+to run with `NODE_ENV=production`.
 
 ## Monorepo layout
 
-- `apps/api` — backend API (auth, projects, scans, detection engine)
-- `apps/web` — frontend SPA
-- `packages/core` — shared types
-- `packages/analysis` — project profiler + parser/AST layer (detector inputs)
+- `apps/api`: backend API (auth, projects, scans, reports) and the scan worker
+- `apps/api/demo`: the vulnerable demo project (generated; source only, never run)
+- `apps/web`: frontend SPA and the Playwright e2e test
+- `packages/core`: shared types
+- `packages/analysis`: profiler, parser/AST layer, taint tracing, detectors and remediation
 
 ## Getting started
 
@@ -26,6 +63,39 @@ npm test                    # uses TEST_DATABASE_URL (a separate *_test database
 
 Open http://localhost:5173, create an account, create a project, and drop a ZIP of its source.
 
+## Architecture
+
+```
+ Browser ──► apps/web (React SPA) ──/api──► apps/api (Express)
+                                            │  auth · projects · scans · findings · compare · reports
+                                            │  rate limits · CORS · ownership checks
+                         ┌──────────────────┼───────────────────────┐
+                         ▼                  ▼                       ▼
+                    PostgreSQL         Redis (BullMQ)         StorageService
+                    users, projects,   scan + report-pdf      uploads, extracted trees,
+                    scans, findings    jobs                   PDF reports (never web-served)
+                                            │
+                                            ▼
+                                     worker process
+                                     claim → safe-extract ──► analysis thread (isolated)
+                                                              profile → parse → detect
+                                                              → de-dup → remediate
+                                     ◄── findings + summary ──┘
+                                     persist + rollup/grade → completed | failed → cleanup
+```
+
+- **apps/web** polls the API and never blocks on a scan.
+- **apps/api** handles HTTP and enqueues jobs. The **worker** (the same codebase,
+  `npm run worker`) processes them.
+- **packages/analysis** is pure Node with no DB or network dependency. The worker runs it in
+  a resource-limited worker thread, so the scanner stays safe against the code it analyzes
+  (see [Scanner hardening](#scanner-hardening)).
+
+Each stage is described below:
+[pipeline](#scanning-pipeline) → [analysis inputs](#analysis-inputs) →
+[detection engine](#detection-engine) → [detectors](#detectors) →
+[remediation](#remediation) → [reports](#reports).
+
 ## Scanning pipeline
 
 ```
@@ -34,12 +104,15 @@ POST /api/projects/:id/scans  (multipart, field "file")
   → store             raw ZIP via StorageService → artifacts(kind = raw_zip)
   → queue             BullMQ job { scanId } on Redis; scan status = queued
   → worker            status = running → safe-extract → artifacts(kind = extracted)
-                      → profile → parse (common AST) → detect → de-dup/correlate
+                      → analysis thread (heap cap + wall-clock timeout, network guard):
+                          profile → parse (common AST) → detect → de-dup/correlate → remediate
                       → findings rows + summary_json { profile, filesParsed, parseErrors,
-                          detectors, findingsTotal, findingsBySeverity,
-                          findingsByOwaspCategory, detectorErrors, … }   (one transaction)
+                          detectors, rollup, detectorErrors, informationalNotes, … }
+                          (one transaction)
                       → completed
-                      (any error → failed, summary_json.error, temp dir removed)
+                      (any error or exceeded limit → failed + summary_json.error)
+                      → cleanup: temp dir removed, raw upload deleted
+                        (failed scans also lose their extracted tree)
 ```
 
 Clients poll `GET /api/scans/:id` to follow `queued → running → completed | failed`.
@@ -57,6 +130,53 @@ Clients poll `GET /api/scans/:id` to follow `queued → running → completed | 
   actually written), and per-entry compression ratio (`EXTRACT_MAX_COMPRESSION_RATIO`, 100:1).
 - **Never materializes symlinks or special files:** symlinks, devices, FIFOs, and encrypted
   entries are skipped. Files are created exclusively (`wx`), so duplicates can't overwrite.
+
+## Scanner hardening
+
+WebGuard analyzes **untrusted code**, so the scanner treats every upload as hostile.
+
+- **Uploaded code is never executed.** The analysis only reads files as text and parses them
+  into ASTs. Nothing from an upload is ever `require`d, `import`ed, `eval`ed, run in `vm`,
+  spawned, built, or `npm install`ed (so lifecycle scripts never run).
+  `apps/api/src/scans/hardening.test.ts` scans a project whose `package.json` scripts,
+  `index.js`, config files, ESM module, `eval` call and `node_modules` package would all
+  write a marker file if executed, and asserts that none was written. A static check also
+  fails the build if the analysis code gains dynamic `require`/`import()`, `vm`,
+  `child_process`, `eval` or `new Function`.
+- **Isolated, resource-limited analysis.** Profile → parse → detect → remediate runs in a
+  `worker_threads` thread:
+  - a V8 heap cap (`SCAN_MAX_HEAP_MB`, default 1024)
+  - a per-scan wall-clock timeout covering extraction and analysis (`SCAN_TIMEOUT_MS`,
+    default 10 min). The thread is **terminated** when it runs out, so even a
+    non-yielding loop (e.g. catastrophic regex backtracking) cannot hang the worker.
+  - extraction limits: max files, max bytes, compression ratio (see above)
+
+  A runaway scan becomes `failed` with a clear reason (for example "Scan exceeded the 600 s
+  time limit and was stopped"). The tests prove both limits with hostile thread entries: an
+  infinite loop and a memory bomb.
+
+- **No network assumptions.** Scans need no network. The only outbound calls that exist are
+  both **opt-in**: live OSV.dev advisories (`OSV_ADVISORIES=true`) and the remediation LLM
+  (`REMEDIATION_LLM=true` plus a key). `OFFLINE=true` forces both off. Inside the analysis
+  thread, `fetch` is wrapped in a host allowlist containing only the enabled services, so
+  nothing else can be reached through it. To route the opt-in calls through a proxy, use
+  Node's `NODE_USE_ENV_PROXY=1` with `HTTPS_PROXY` (Node 22.21+ / 24).
+- **Cleanup.** The per-scan temp dir (ZIP copy and extracted tree) is removed when the job
+  ends, whatever the outcome. The stored upload is deleted once the scan finishes. A failed
+  scan also loses its extracted tree and artifact rows. A completed scan keeps only its
+  extracted tree (for the code view) and its reports. Deleting a project removes all of its
+  stored files, not just its rows.
+- **Nothing is web-served.** `STORAGE_DIR` is never mounted statically. Files are reachable
+  only through ownership-checked API routes: source text has secrets redacted, and reports
+  are sent with a strict CSP.
+- **HTTP abuse limits.**
+  - `POST /api/auth/*` (login, register, password reset) is rate-limited per client IP:
+    `AUTH_RATE_LIMIT` per 15 minutes, default 30.
+  - Uploads are limited per user: `UPLOAD_RATE_LIMIT` per hour, default 30.
+  - Over the limit, the API answers `429` with `RateLimit` headers. Behind a proxy, set
+    `TRUST_PROXY` so the client IP is used.
+- **CORS** allows only the configured frontend origin (`CORS_ORIGIN`, default `APP_BASE_URL`).
+  Other origins get no CORS headers.
 
 ## Analysis inputs
 
@@ -323,9 +443,9 @@ Bearer-token APIs are excluded.
 - Advisories come from pluggable **`AdvisorySource`s**. The default is the bundled offline
   snapshot (a small curated sample: sanitize-html, express-jwt, jsonwebtoken, lodash,
   minimist, moment, plus EOL `request` / `marsdb`). It works without network access.
-  `OsvAdvisorySource` is a stub for OSV.dev's batch API that stays inactive unless constructed
-  with `allowNetwork: true` and an injected `fetch`, so scans never assume outbound access.
-  Juice Shop #31.
+  Setting `OSV_ADVISORIES=true` also queries OSV.dev's batch API, which is opt-in and
+  disabled by `OFFLINE=true`. Matches are reported as `high` with no fixed version, and a
+  lookup failure becomes a warning, never a failed scan. Juice Shop #31.
 - **Typosquats**: a dependency 1–2 edits from a bundled popular-package list, or equal to one
   after stripping a `-js` / `node-` affix, that isn't popular itself or on the verified
   allowlist (e.g. `preact`). The finding names the likely intended package. #32: `epilogue-js`
@@ -355,6 +475,48 @@ class fields (`this.x` assigned in any method), callback parameters (`.subscribe
 Numeric casts, comparisons, `.length`, and DB lookups (`findByPk(id)` returns stored data, not
 `id`) stop taint. Detectors can add sanitizers or treat scalar coercion as safe. Not followed:
 calls into other functions or files, object mutation and aliasing, and per-branch control flow.
+
+## What WebGuard can and cannot detect
+
+WebGuard reads source code. That makes it good at **code-level** defects and blind to
+**runtime and deployment** behavior. Every finding carries a confidence, and heuristic results
+are labeled **Candidate** or **Needs review** in the UI and reports.
+
+**Reliable (static).** High confidence when the source → sink flow is proven within a file:
+
+- SQL and NoSQL injection, SSTI and `eval`
+- DOM and reflected XSS with a traceable source
+- hardcoded secrets in known formats
+- weak password hashing and broken ciphers
+- vulnerable and end-of-life dependencies (exact versions come from lockfiles), and typosquats
+- stack-trace disclosure, directory listing, and backup or key files in served directories
+
+**Partial (heuristic).** Medium or low confidence, often labeled **Candidate**:
+
+- stored XSS (where data is written is matched to where it is rendered by field name)
+- missing authorization and IDOR, mass assignment, CSRF
+- missing security headers, entropy-only secrets, JSONP, deprecated routes
+
+Authorization intent is semantic, so confirm these manually. Taint tracing also stays within
+one function: flows through helper functions or across files are reported with lower
+confidence, or missed.
+
+**Needs dynamic or manual testing.** These appear as **informational notes** in every scan
+instead of being dropped; check them with a DAST tool or a manual review:
+
+- weak password policy (#15), information disclosure in published content (#17), and the
+  discovery challenges (#33/#34)
+- business-logic flaws, race conditions, and authentication flows at runtime
+- proxy, CDN, TLS and header configuration that lives outside the code
+- secrets stored elsewhere, and vulnerabilities in compiled or minified bundles
+
+**Out of scope.** Languages other than JS/TS (Python, PHP and Java get only pattern rules for
+weak hashing), binaries, infrastructure-as-code policy checks, and advisories beyond the
+bundled snapshot when OSV is off. The parser layer is pluggable; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+A clean scan is not proof of security, and a finding is not proof of exploitability. Treat
+WebGuard as a fast, explainable first pass next to code review and dynamic testing.
 
 ## Remediation
 
@@ -453,17 +615,18 @@ session after validating it with `GET /api/auth/me`. Every request sends
 single-use link that expires in 30 minutes. In development the link is printed to the API
 log, because no mail transport is configured.
 
-| Route                 | What it shows                                                                                                                                                                                                                             |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/login`, `/register` | Sign in and create an account                                                                                                                                                                                                             |
-| `/forgot-password`    | Request a reset link. The response is the same whether or not the account exists                                                                                                                                                          |
-| `/reset-password`     | Set a new password from the emailed link                                                                                                                                                                                                  |
-| `/projects`           | Project cards showing the last scan's grade, status, and critical/high/medium counts. Create, rename, and delete projects here                                                                                                            |
-| `/projects/:id`       | Drag-and-drop ZIP upload with a progress bar, plus the scan history                                                                                                                                                                       |
-| `/scans/:id`          | Live status, polled every 2 s (queued → running → completed/failed). Once completed: a dashboard (total, risk grade, trend vs the previous scan, severity donut, OWASP bars), report buttons, the findings table, and informational notes |
-| `/findings/:id`       | Monaco view of the file with the vulnerable lines highlighted. Explanation / Exploit & Impact / Fix tabs; Fix lists the steps and a before/after with a copy button                                                                       |
-| `/scans/:id/report`   | The HTML report in a sandboxed iframe, plus PDF and JSON downloads                                                                                                                                                                        |
-| `/account`            | Email, theme, and sign out                                                                                                                                                                                                                |
+| Route                   | What it shows                                                                                                                                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/login`, `/register`   | Sign in and create an account                                                                                                                                                                                                             |
+| `/forgot-password`      | Request a reset link. The response is the same whether or not the account exists                                                                                                                                                          |
+| `/reset-password`       | Set a new password from the emailed link                                                                                                                                                                                                  |
+| `/projects`             | Project cards showing the last scan's grade, status, and critical/high/medium counts. Create, rename, and delete projects here                                                                                                            |
+| `/projects/:id`         | Drag-and-drop ZIP upload with a progress bar, plus the scan history                                                                                                                                                                       |
+| `/projects/:id/history` | Risk score over time (line chart with a table view) and a two-scan comparison: pick a baseline and a scan, then see the New / Fixed / Still open findings and the risk delta. "See what changed →" on a scan's trend tile opens it        |
+| `/scans/:id`            | Live status, polled every 2 s (queued → running → completed/failed). Once completed: a dashboard (total, risk grade, trend vs the previous scan, severity donut, OWASP bars), report buttons, the findings table, and informational notes |
+| `/findings/:id`         | Monaco view of the file with the vulnerable lines highlighted. Explanation / Exploit & Impact / Fix tabs; Fix lists the steps and a before/after with a copy button                                                                       |
+| `/scans/:id/report`     | The HTML report in a sandboxed iframe, plus PDF and JSON downloads                                                                                                                                                                        |
+| `/account`              | Email, theme, and sign out                                                                                                                                                                                                                |
 
 - **Severity and confidence are always shown.** Findings with low confidence (< 50%) are
   labeled **Needs review**. Route-level heuristics are labeled **Candidate**. Both kinds of
@@ -487,10 +650,22 @@ log, because no mail transport is configured.
 - **States.** Every data view has loading, empty, and error states. Long scans never block the
   UI: you can leave the page and come back.
 
-**E2E.** `npm run e2e --workspace apps/web` registers a user, creates a project, uploads a
-small vulnerable app, waits for the dashboard, opens the SQL injection finding in Monaco,
-and deletes the project. It starts the API (on `E2E_API_PORT`, default 3100), the worker,
-and Vite unless they are already running. Postgres and Redis must be running, from
+**E2E.** `npm run e2e` (`apps/web/e2e/full-flow.spec.ts`) runs the whole product against the
+real stack, in this order:
+
+1. Register, sign out, and sign in again.
+2. Create a project and upload the demo ZIP.
+3. Poll the scan to completion.
+4. Assert the expected OWASP categories and detector hits.
+5. Open the SQL injection finding in Monaco, and confirm the secret is redacted in the code
+   view.
+6. Download the PDF report and check its `%PDF-` header.
+7. Rescan and check the comparison (0 new, 0 fixed).
+8. Delete the project.
+
+It starts the API (on `E2E_API_PORT`, default 3100), the worker, and Vite unless they are
+already running. CI runs it as a separate job after lint, typecheck and the unit and
+integration suites. Postgres and Redis must be running, from
 `docker compose up -d`. It uses the preinstalled Chromium/Chrome (`CHROMIUM_PATH` or common
 install paths) with `--headless --no-sandbox`; Playwright browsers are never downloaded.
 
@@ -541,18 +716,62 @@ artifacts) and are indexed; `findings` also has a composite index on `(scan_id, 
 
 All routes require `Authorization: Bearer <token>`. Resources owned by another user return `404`.
 
-| Method | Path                      | Notes                                                                                                 |
-| ------ | ------------------------- | ----------------------------------------------------------------------------------------------------- |
-| POST   | `/api/projects`           | `{ name }` → `201` project                                                                            |
-| GET    | `/api/projects`           | Current user's projects, newest first, each with `lastScan` (status, rollup)                          |
-| GET    | `/api/projects/:id`       | One project                                                                                           |
-| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                                          |
-| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                                           |
-| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                                               |
-| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                                                     |
-| GET    | `/api/scans/:id`          | One scan with status and summary                                                                      |
-| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                        |
-| GET    | `/api/scans/:id/source`   | `?path=` → extracted file as text (secret lines redacted); `400` bad path, `413` > 2 MB, `415` binary |
+| Method | Path                      | Notes                                                                                                                                                      |
+| ------ | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/projects`           | `{ name }` → `201` project                                                                                                                                 |
+| GET    | `/api/projects`           | Current user's projects, newest first, each with `lastScan` (status, rollup)                                                                               |
+| GET    | `/api/projects/:id`       | One project                                                                                                                                                |
+| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                                                                                               |
+| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                                                                                                |
+| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                                                                                                    |
+| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                                                                                                          |
+| GET    | `/api/scans/:id`          | One scan with status and summary                                                                                                                           |
+| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                                                                             |
+| GET    | `/api/scans/:id/compare`  | `?against=<scanId>` → `{ scan, against, fixed, new, persisting, summary }`; both scans must be completed and in the same project (`409` / `400` otherwise) |
+| GET    | `/api/scans/:id/source`   | `?path=` → extracted file as text (secret lines redacted); `400` bad path, `413` > 2 MB, `415` binary                                                      |
+
+`DELETE /api/projects/:id` also removes the project's stored files. `POST /api/auth/*` and
+uploads are rate-limited and answer `429` when over the limit (see
+[Scanner hardening](#scanner-hardening)).
+
+**Scan comparison.** Two scans are diffed by a stable **fingerprint**: the SHA-256 of
+detector id + file path + whitespace-normalized code, or the line range when there is no code.
+
+- A finding whose code only moved lines, or was re-indented, counts as **persisting**, not as
+  one fixed plus one new.
+- Fingerprints are matched one-to-one, closest line first, so a third copy of the same bug is
+  reported as new.
+- `summary` adds the deltas in total findings and risk score.
+
+## Configuration
+
+All settings come from environment variables. Locally they're read from the repo-root `.env`;
+see `.env.example`.
+
+| Variable                                                                          | Default                                 | Purpose                                                            |
+| --------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| `JWT_SECRET`                                                                      | (required)                              | HS256 signing secret (tokens expire after 1 h)                     |
+| `PORT`                                                                            | `3000`                                  | API port                                                           |
+| `DATABASE_URL` / `TEST_DATABASE_URL`                                              | —                                       | Postgres for the app / the test suite (name must end in `_test`)   |
+| `REDIS_URL` / `SCAN_QUEUE_NAME`                                                   | `redis://localhost:6379` / `scans`      | BullMQ connection and queue                                        |
+| `STORAGE_DIR`                                                                     | `./storage`                             | Local `StorageService` root (relative to `apps/api`); never served |
+| `MAX_UPLOAD_BYTES`                                                                | 50 MB                                   | Upload size cap                                                    |
+| `EXTRACT_MAX_FILES` / `EXTRACT_MAX_TOTAL_BYTES` / `EXTRACT_MAX_COMPRESSION_RATIO` | 20,000 / 500 MB / 100                   | Zip-bomb limits                                                    |
+| `ANALYSIS_MAX_FILE_BYTES`                                                         | 1 MB                                    | Larger files are profiled but not parsed                           |
+| `SCAN_TIMEOUT_MS`                                                                 | 600000                                  | Wall-clock limit per scan job                                      |
+| `SCAN_MAX_HEAP_MB`                                                                | 1024                                    | Heap cap for the analysis thread                                   |
+| `OFFLINE`                                                                         | `false`                                 | `true` disables every outbound call (overrides the next two)       |
+| `OSV_ADVISORIES`                                                                  | `false`                                 | Opt-in live OSV.dev dependency advisories                          |
+| `REMEDIATION_LLM` / `ANTHROPIC_API_KEY` / `REMEDIATION_LLM_MODEL`                 | `false` / — / SDK default               | Opt-in LLM-drafted secure examples                                 |
+| `CHROMIUM_PATH`                                                                   | auto-detected                           | Preinstalled Chromium/Chrome for PDF reports and e2e               |
+| `REPORT_PDF_WAIT_MS` / `REPORT_PDF_ON_COMPLETE`                                   | 60000 / `true`                          | PDF request wait; pre-render on completion                         |
+| `APP_BASE_URL`                                                                    | `http://localhost:5173`                 | SPA URL (password-reset links, default CORS origin)                |
+| `CORS_ORIGIN`                                                                     | `APP_BASE_URL`                          | Comma-separated origins allowed cross-origin                       |
+| `TRUST_PROXY`                                                                     | unset                                   | Express `trust proxy` value when behind a reverse proxy            |
+| `AUTH_RATE_LIMIT` / `UPLOAD_RATE_LIMIT`                                           | 30 per 15 min / 30 per hour             | Abuse limits (per IP / per user)                                   |
+| `VITE_API_BASE_URL` / `VITE_API_PROXY_TARGET`                                     | same origin / `http://localhost:$PORT`  | SPA API base and Vite dev-proxy target                             |
+| `E2E_API_PORT` / `E2E_BASE_URL`                                                   | `3100` / `http://localhost:5173`        | Ports used by `npm run e2e`                                        |
+| `DEMO_EMAIL` / `DEMO_PASSWORD`                                                    | `demo@webguard.local` / `webguard-demo` | Seeded demo account                                                |
 
 ## Status
 
@@ -570,3 +789,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 12. Remediation engine
 - [x] 13. Report builder (JSON / HTML / PDF)
 - [x] 14. Frontend SPA
+- [x] 15. History, compare, hardening, docs & demo

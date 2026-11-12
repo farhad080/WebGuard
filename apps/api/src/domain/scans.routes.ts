@@ -1,9 +1,11 @@
-import type { Prisma } from '@prisma/client';
+import type { Prisma, Scan } from '@prisma/client';
+import type { Finding, ScanComparison, ScanRef, ScanSummary, Severity } from '@webguard/core';
 import { Router } from 'express';
 import { authMiddleware } from '../auth/middleware.js';
 import { prisma } from '../db.js';
 import { asyncHandler } from '../middleware/async-handler.js';
 import { getStorage, storageKeys } from '../scans/storage.js';
+import { diffFindings } from './compare.js';
 import { findOwnedScan, parseId } from './ownership.js';
 import { findingsQuerySchema } from './schemas.js';
 import { toFinding, toScan } from './serializers.js';
@@ -53,6 +55,86 @@ scansRouter.get(
       orderBy: [{ filePath: 'asc' }, { lineStart: 'asc' }, { id: 'asc' }],
     });
     res.json(findings.map(toFinding));
+  }),
+);
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+const bySeverity = (a: Finding, b: Finding) =>
+  SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+  a.filePath.localeCompare(b.filePath) ||
+  a.lineStart - b.lineStart;
+
+const toScanRef = (scan: Scan): ScanRef => ({
+  id: scan.id,
+  createdAt: scan.createdAt.toISOString(),
+  finishedAt: scan.finishedAt?.toISOString() ?? null,
+  rollup: (scan.summaryJson as ScanSummary | null)?.rollup ?? null,
+});
+
+/**
+ * Diff of two completed scans of the same project: findings fixed since `against`, new ones,
+ * and the ones still open (matched by fingerprint, see compare.ts).
+ */
+scansRouter.get(
+  '/:id/compare',
+  asyncHandler(async (req, res) => {
+    const id = parseId(req.params.id);
+    const againstId = parseId(typeof req.query.against === 'string' ? req.query.against : '');
+    const scan = id && (await findOwnedScan(req.user!.id, id));
+    if (!scan) {
+      res.status(404).json(notFound);
+      return;
+    }
+    if (!againstId) {
+      res.status(400).json({ error: 'Query parameter "against" must be a scan id' });
+      return;
+    }
+    const against = await findOwnedScan(req.user!.id, againstId);
+    if (!against) {
+      res.status(404).json(notFound);
+      return;
+    }
+    if (against.projectId !== scan.projectId) {
+      res.status(400).json({ error: 'Both scans must belong to the same project' });
+      return;
+    }
+    if (scan.status !== 'completed' || against.status !== 'completed') {
+      res.status(409).json({ error: 'Both scans must be completed to compare them' });
+      return;
+    }
+
+    const [current, baseline] = await Promise.all(
+      [scan.id, against.id].map(async (scanId) =>
+        (await prisma.finding.findMany({ where: { scanId } })).map(toFinding),
+      ),
+    );
+    const diff = diffFindings(baseline!, current!);
+    const scanRef = toScanRef(scan);
+    const againstRef = toScanRef(against);
+    const body: ScanComparison = {
+      scan: scanRef,
+      against: againstRef,
+      fixed: diff.fixed.sort(bySeverity),
+      new: diff.new.sort(bySeverity),
+      persisting: diff.persisting.sort((a, b) => bySeverity(a.finding, b.finding)),
+      summary: {
+        fixed: diff.fixed.length,
+        new: diff.new.length,
+        persisting: diff.persisting.length,
+        totalDelta: current!.length - baseline!.length,
+        riskScoreDelta:
+          scanRef.rollup && againstRef.rollup
+            ? scanRef.rollup.riskScore - againstRef.rollup.riskScore
+            : null,
+      },
+    };
+    res.json(body);
   }),
 );
 

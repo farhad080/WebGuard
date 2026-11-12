@@ -17,6 +17,9 @@ const ScanPage = lazy(() => import('./pages/ScanPage').then((m) => ({ default: m
 const FindingPage = lazy(() =>
   import('./pages/FindingPage').then((m) => ({ default: m.FindingPage })),
 );
+const HistoryPage = lazy(() =>
+  import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })),
+);
 const ReportViewerPage = lazy(() =>
   import('./pages/ReportViewerPage').then((m) => ({ default: m.ReportViewerPage })),
 );
@@ -68,6 +71,7 @@ export function AppRoutes() {
         <Route index element={<Navigate to="/projects" replace />} />
         <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+        <Route path="/projects/:projectId/history" element={page(<HistoryPage />)} />
         <Route path="/scans/:scanId" element={page(<ScanPage />)} />
         <Route path="/scans/:scanId/report" element={page(<ReportViewerPage />)} />
         <Route path="/findings/:findingId" element={page(<FindingPage />)} />

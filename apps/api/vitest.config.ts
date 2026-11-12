@@ -28,6 +28,11 @@ export default defineConfig({
       STORAGE_DIR: path.join(os.tmpdir(), 'webguard-test-storage'),
       // PDFs are rendered on request in tests (deterministic); the worker's proactive render is off.
       REPORT_PDF_ON_COMPLETE: 'false',
+      // Rate limits are exercised by dedicated tests with their own app instances.
+      AUTH_RATE_LIMIT: '100000',
+      UPLOAD_RATE_LIMIT: '100000',
+      // Scans never need the network; prove it in tests.
+      OFFLINE: 'true',
     },
     globalSetup: ['./test/global-setup.ts'],
     // Tests share one database and one queue; run files sequentially.

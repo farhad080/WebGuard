@@ -49,17 +49,59 @@ export const config = {
     return positiveNumber('MAX_UPLOAD_BYTES', 50 * MiB);
   },
 
+  /** Origins allowed to call the API cross-origin (CORS_ORIGIN, comma-separated; default APP_BASE_URL). */
+  get corsOrigins(): string[] {
+    const raw = process.env.CORS_ORIGIN ?? this.appBaseUrl;
+    return raw
+      .split(',')
+      .map((o) => o.trim().replace(/\/+$/, ''))
+      .filter(Boolean);
+  },
+  /** Express `trust proxy` (set when behind a reverse proxy so rate limits see client IPs). */
+  get trustProxy(): string | false {
+    return process.env.TRUST_PROXY || false;
+  },
+  /** Per-IP limit on /api/auth/* requests per 15 minutes. */
+  get authRateLimit(): number {
+    return positiveNumber('AUTH_RATE_LIMIT', 30);
+  },
+  /** Per-user limit on ZIP uploads per hour. */
+  get uploadRateLimit(): number {
+    return positiveNumber('UPLOAD_RATE_LIMIT', 30);
+  },
+
+  /**
+   * OFFLINE=true is a master switch: the scanner makes no outbound request at all, whatever
+   * the per-feature flags say. Scans never *need* the network either way.
+   */
+  get offline(): boolean {
+    return process.env.OFFLINE === 'true';
+  },
+  /** Opt-in live OSV.dev advisory lookups for dependencies (default off: bundled snapshot only). */
+  get osvAdvisories(): boolean {
+    return !this.offline && process.env.OSV_ADVISORIES === 'true';
+  },
+
   /**
    * Optional LLM assist for remediation snippets. Off unless REMEDIATION_LLM=true AND an
-   * Anthropic API key is set; no code leaves the server otherwise.
+   * Anthropic API key is set (and not OFFLINE); no code leaves the server otherwise.
    */
   get remediationLlm(): { enabled: boolean; apiKey?: string; model?: string } {
     const apiKey = process.env.ANTHROPIC_API_KEY || undefined;
     return {
-      enabled: process.env.REMEDIATION_LLM === 'true' && apiKey !== undefined,
+      enabled: !this.offline && process.env.REMEDIATION_LLM === 'true' && apiKey !== undefined,
       apiKey,
       model: process.env.REMEDIATION_LLM_MODEL || undefined,
     };
+  },
+
+  /** Wall-clock budget for one scan job, extraction through detection (default 10 min). */
+  get scanTimeoutMs(): number {
+    return positiveNumber('SCAN_TIMEOUT_MS', 10 * 60_000);
+  },
+  /** Heap cap for the isolated analysis thread of one scan (default 1024 MB). */
+  get scanMaxHeapMb(): number {
+    return positiveNumber('SCAN_MAX_HEAP_MB', 1024);
   },
 
   /** Preinstalled Chromium for PDF reports (auto-detected when unset; never downloaded). */

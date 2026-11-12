@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { Scan, ScanRollup } from '@webguard/core';
 import { SEVERITIES } from '../lib/findings';
 import { GradeBadge } from './Badges';
@@ -23,7 +24,15 @@ function Delta({ current, previous, label }: { current: number; previous: number
   );
 }
 
-export function TrendTile({ rollup, previous }: { rollup: ScanRollup; previous: Scan | null }) {
+export function TrendTile({
+  rollup,
+  previous,
+  scanId,
+}: {
+  rollup: ScanRollup;
+  previous: Scan | null;
+  scanId?: string;
+}) {
   const prev = previous?.summary?.rollup;
   return (
     <div className="stat-tile" data-testid="trend-tile">
@@ -42,6 +51,14 @@ export function TrendTile({ rollup, previous }: { rollup: ScanRollup; previous: 
               return d !== 0 ? ` · ${s} ${d > 0 ? '+' : ''}${d}` : '';
             })}
           </span>
+          {scanId && previous && (
+            <Link
+              className="small"
+              to={`/projects/${previous.projectId}/history?scan=${scanId}&against=${previous.id}`}
+            >
+              See what changed →
+            </Link>
+          )}
         </>
       ) : (
         <>
@@ -55,7 +72,15 @@ export function TrendTile({ rollup, previous }: { rollup: ScanRollup; previous: 
   );
 }
 
-export function Dashboard({ rollup, previous }: { rollup: ScanRollup; previous: Scan | null }) {
+export function Dashboard({
+  rollup,
+  previous,
+  scanId,
+}: {
+  rollup: ScanRollup;
+  previous: Scan | null;
+  scanId?: string;
+}) {
   return (
     <div className="dashboard" data-testid="dashboard">
       <div className="stat-row">
@@ -76,7 +101,7 @@ export function Dashboard({ rollup, previous }: { rollup: ScanRollup; previous: 
           </span>
           <span className="muted small">{rollup.gradeReason}</span>
         </div>
-        <TrendTile rollup={rollup} previous={previous} />
+        <TrendTile rollup={rollup} previous={previous} scanId={scanId} />
       </div>
       <div className="chart-row">
         <SeverityDonut rollup={rollup} />

@@ -20,7 +20,11 @@
     "dev": "npm run dev --workspace apps/api",
     "db:migrate": "npm run db:migrate --workspace apps/api",
     "worker": "npm run worker --workspace apps/api",
-    "build:packages": "npm run build --workspace @webguard/core && npm run build --workspace @webguard/analysis"
+    "build:packages": "npm run build --workspace @webguard/core && npm run build --workspace @webguard/analysis",
+    "dev:web": "npm run dev --workspace apps/web",
+    "seed:demo": "npm run seed:demo --workspace apps/api --",
+    "demo": "node scripts/demo.mjs",
+    "e2e": "npm run e2e --workspace apps/web"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

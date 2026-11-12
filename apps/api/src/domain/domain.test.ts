@@ -348,3 +348,111 @@ describe('GET /api/scans/:id/source', () => {
     expect((await get(scan.id, 'src/config.js', bob)).status).toBe(404);
   });
 });
+
+describe('GET /api/scans/:id/compare', () => {
+  async function completedScan(
+    projectId: string,
+    findings: {
+      detectorId: string;
+      snippet: string;
+      lineStart: number;
+      severity?: Finding['severity'];
+    }[],
+    riskScore: number,
+  ) {
+    const scan = await createScan(alice, projectId);
+    await prisma.scan.update({
+      where: { id: scan.id },
+      data: {
+        status: 'completed',
+        finishedAt: new Date(),
+        summaryJson: { rollup: { total: findings.length, riskScore, grade: 'C' } },
+      },
+    });
+    for (const x of findings) {
+      await prisma.finding.create({
+        data: {
+          scanId: scan.id,
+          detectorId: x.detectorId,
+          owaspCategory: 'A05:2025-Injection',
+          severity: x.severity ?? 'high',
+          confidence: 0.9,
+          filePath: 'src/app.js',
+          lineStart: x.lineStart,
+          lineEnd: x.lineStart,
+          snippet: x.snippet,
+          explanation: 'e',
+          fixSuggestion: 'f',
+        },
+      });
+    }
+    return scan;
+  }
+
+  const compare = (id: string, against: string, auth = alice) =>
+    request(app).get(`/api/scans/${id}/compare`).query({ against }).set('Authorization', auth);
+
+  it('returns fixed, new, and persisting findings with deltas', async () => {
+    const project = await createProject(alice);
+    const before = await completedScan(
+      project.id,
+      [
+        { detectorId: 'A1-sql-injection', snippet: 'db.query(q + id)', lineStart: 3 },
+        { detectorId: 'A4-xss', snippet: 'el.innerHTML = q', lineStart: 9 },
+      ],
+      60,
+    );
+    const after = await completedScan(
+      project.id,
+      [
+        { detectorId: 'A1-sql-injection', snippet: 'db.query(q  +  id)', lineStart: 7 },
+        {
+          detectorId: 'A6-weak-crypto',
+          snippet: "createHash('md5')",
+          lineStart: 2,
+          severity: 'medium',
+        },
+      ],
+      45,
+    );
+
+    const res = await compare(after.id, before.id);
+    expect(res.status).toBe(200);
+    expect(res.body.scan.id).toBe(after.id);
+    expect(res.body.against.id).toBe(before.id);
+    expect(res.body.fixed.map((x: Finding) => x.detectorId)).toEqual(['A4-xss']);
+    expect(res.body.new.map((x: Finding) => x.detectorId)).toEqual(['A6-weak-crypto']);
+    expect(res.body.persisting).toHaveLength(1);
+    expect(res.body.persisting[0].finding.lineStart).toBe(7);
+    expect(res.body.persisting[0].previous.lineStart).toBe(3);
+    expect(res.body.summary).toEqual({
+      fixed: 1,
+      new: 1,
+      persisting: 1,
+      totalDelta: 0,
+      riskScoreDelta: -15,
+    });
+  });
+
+  it('rejects scans from different projects, incomplete scans, and bad ids', async () => {
+    const p1 = await createProject(alice, 'one');
+    const p2 = await createProject(alice, 'two');
+    const a = await completedScan(p1.id, [], 0);
+    const b = await completedScan(p2.id, [], 0);
+    const queued = await createScan(alice, p1.id);
+
+    expect((await compare(a.id, b.id)).status).toBe(400);
+    expect((await compare(a.id, queued.id)).status).toBe(409);
+    expect((await compare(a.id, 'nope')).status).toBe(400);
+    expect(
+      (await request(app).get(`/api/scans/${a.id}/compare`).set('Authorization', alice)).status,
+    ).toBe(400);
+  });
+
+  it("returns 404 for another user's scans", async () => {
+    const project = await createProject(alice);
+    const a = await completedScan(project.id, [], 0);
+    const b = await completedScan(project.id, [], 0);
+    expect((await compare(a.id, b.id, bob)).status).toBe(404);
+  });
+});

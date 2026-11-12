@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import type { Scan, ScanStatus } from '@webguard/core';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/endpoints';
@@ -84,6 +85,16 @@ export function ScanPage() {
     },
   });
   const completed = scan.data?.status === 'completed';
+  const finalStatus =
+    scan.data?.status === 'completed' || scan.data?.status === 'failed' ? scan.data.status : null;
+  const projectIdOfScan = scan.data?.projectId;
+  const qc = useQueryClient();
+  // Once the scan reaches a final state, lists cached while it was in flight are stale.
+  useEffect(() => {
+    if (!finalStatus || !projectIdOfScan) return;
+    void qc.invalidateQueries({ queryKey: ['scans', projectIdOfScan] });
+    void qc.invalidateQueries({ queryKey: ['projects'] });
+  }, [finalStatus, projectIdOfScan, qc]);
   const findings = useQuery({
     queryKey: ['findings', scanId],
     queryFn: () => api.listFindings(scanId),
@@ -149,7 +160,7 @@ export function ScanPage() {
       {completed && (
         <>
           {rollup ? (
-            <Dashboard rollup={rollup} previous={previous} />
+            <Dashboard rollup={rollup} previous={previous} scanId={s.id} />
           ) : (
             <p className="muted">This scan has no rollup (it predates the dashboard).</p>
           )}

@@ -18,6 +18,11 @@ export interface EngineOptions {
   logger?: EngineLogger;
   /** A runaway detector can't flood the report (default 5,000 per detector). */
   maxFindingsPerDetector?: number;
+  /**
+   * Called before each detector runs. Throwing aborts the whole run (unlike a detector error,
+   * which is recorded and skipped) — used to enforce a scan's time/memory budget.
+   */
+  checkpoint?: () => void;
 }
 
 export interface EngineResult {
@@ -37,6 +42,7 @@ export interface EngineResult {
 export class DetectionEngine {
   private readonly logger: EngineLogger;
   private readonly maxFindingsPerDetector: number;
+  private readonly checkpoint: (() => void) | undefined;
 
   constructor(
     private readonly registry: DetectorRegistry,
@@ -44,6 +50,7 @@ export class DetectionEngine {
   ) {
     this.logger = options.logger ?? console;
     this.maxFindingsPerDetector = options.maxFindingsPerDetector ?? 5000;
+    this.checkpoint = options.checkpoint;
   }
 
   async run(ctx: DetectionContext): Promise<EngineResult> {
@@ -54,6 +61,7 @@ export class DetectionEngine {
 
     for (const stage of TECHNIQUE_STAGES) {
       for (const detector of this.registry.byTechnique(stage)) {
+        this.checkpoint?.();
         executed.push(detector.id);
         const fail = (message: string, err?: unknown) => {
           detectorErrors.push({ detectorId: detector.id, stage, message });

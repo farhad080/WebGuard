@@ -10,3 +10,6 @@ storage
 # Playwright (e2e) output
 test-results
 playwright-report
+
+# Generated demo archive (npm run seed:demo)
+apps/api/demo/*.zip

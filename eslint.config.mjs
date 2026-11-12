@@ -10,6 +10,10 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       '**/coverage/**',
+      // Local scan storage (uploads/extracted projects) and Playwright output: data, not source.
+      '**/storage/**',
+      '**/test-results/**',
+      '**/playwright-report/**',
       // Fixture projects are scanned by tests, not linted (some are intentionally broken).
       '**/test/fixtures/**',
     ],
