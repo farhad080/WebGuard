@@ -6,3 +6,7 @@ coverage
 
 # Local object storage (StorageService) and uploads
 storage
+
+# Playwright (e2e) output
+test-results
+playwright-report

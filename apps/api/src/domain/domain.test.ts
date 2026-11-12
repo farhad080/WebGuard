@@ -6,6 +6,7 @@ import { createUserWithToken, resetDatabase } from '../../test/helpers.js';
 import { createApp } from '../app.js';
 import { prisma } from '../db.js';
 import { closeScanQueue, getScanQueue } from '../scans/queue.js';
+import { getStorage, storageKeys } from '../scans/storage.js';
 
 const app = createApp();
 let alice: string;
@@ -260,5 +261,90 @@ describe('ownership', () => {
     expect(
       (await request(app).get(`/api/scans/${scan.id}/findings`).set('Authorization', bob)).status,
     ).toBe(404);
+  });
+});
+
+describe('GET /api/projects lastScan', () => {
+  it('is null without scans and carries the newest scan with its rollup', async () => {
+    const project = await createProject(alice);
+    let res = await request(app).get('/api/projects').set('Authorization', alice);
+    expect(res.body[0].lastScan).toBeNull();
+
+    await createScan(alice, project.id);
+    const newest = await createScan(alice, project.id);
+    const rollup = { total: 2, grade: 'C', riskScore: 40 };
+    await prisma.scan.update({
+      where: { id: newest.id },
+      data: { status: 'completed', finishedAt: new Date(), summaryJson: { rollup } },
+    });
+
+    res = await request(app).get('/api/projects').set('Authorization', alice);
+    expect(res.body[0].lastScan).toMatchObject({
+      id: newest.id,
+      status: 'completed',
+      finishedAt: expect.any(String),
+      rollup,
+    });
+  });
+});
+
+describe('GET /api/scans/:id/source', () => {
+  async function seedSource() {
+    const project = await createProject(alice);
+    const scan = await createScan(alice, project.id);
+    const storage = getStorage();
+    const base = storageKeys.extracted(scan.id);
+    await storage.put(
+      `${base}/src/config.js`,
+      Buffer.from("const a = 1;\nconst key = 'sk_live_abcdef1234567890';\nmodule.exports = a;\n"),
+    );
+    await storage.put(`${base}/bin/blob.dat`, Buffer.from([1, 0, 2]));
+    await prisma.finding.create({
+      data: {
+        scanId: scan.id,
+        detectorId: 'A5-hardcoded-secrets',
+        owaspCategory: 'A04:2025-Cryptographic Failures',
+        severity: 'high',
+        confidence: 0.9,
+        filePath: 'src/config.js',
+        lineStart: 2,
+        lineEnd: 2,
+        snippet: "const key = 'sk_l…[redacted]';",
+        explanation: 'Hardcoded secret.',
+        fixSuggestion: 'Use env vars.',
+      },
+    });
+    return scan;
+  }
+
+  const get = (scanId: string, path: string, auth = alice) =>
+    request(app).get(`/api/scans/${scanId}/source`).query({ path }).set('Authorization', auth);
+
+  it('returns the file text with secret lines redacted', async () => {
+    const scan = await seedSource();
+    const res = await get(scan.id, 'src/config.js');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^text\/plain/);
+    expect(res.text).toBe("const a = 1;\nconst key = 'sk_l…[redacted]';\nmodule.exports = a;\n");
+    expect(res.text).not.toContain('abcdef1234567890');
+  });
+
+  it('rejects traversal and malformed paths with 400', async () => {
+    const scan = await seedSource();
+    for (const p of ['', '../x', 'src/../../x', '/etc/passwd', 'src\\config.js', 'src//a', './a']) {
+      expect((await get(scan.id, p)).status, p).toBe(400);
+    }
+  });
+
+  it('returns 404 for missing files and directories, 415 for binary', async () => {
+    const scan = await seedSource();
+    expect((await get(scan.id, 'nope.js')).status).toBe(404);
+    expect((await get(scan.id, 'src')).status).toBe(404);
+    expect((await get(scan.id, 'bin/blob.dat')).status).toBe(415);
+  });
+
+  it("returns 404 for another user's scan", async () => {
+    const scan = await seedSource();
+    expect((await get(scan.id, 'src/config.js', bob)).status).toBe(404);
   });
 });

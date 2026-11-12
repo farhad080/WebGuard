@@ -20,8 +20,11 @@ docker compose up -d        # Postgres + Redis
 npm run db:migrate          # apply Prisma migrations
 npm run dev --workspace apps/api
 npm run worker              # in a second terminal: processes queued scans
+npm run dev --workspace apps/web   # in a third terminal: SPA on http://localhost:5173
 npm test                    # uses TEST_DATABASE_URL (a separate *_test database)
 ```
+
+Open http://localhost:5173, create an account, create a project, and drop a ZIP of its source.
 
 ## Scanning pipeline
 
@@ -424,15 +427,88 @@ worker is still busy. Rendering uses the **preinstalled** Chromium/Chrome via
 `--headless --no-sandbox --print-to-pdf`, located by `CHROMIUM_PATH` or common install paths;
 no browser is downloaded at runtime.
 
+## Frontend
+
+`apps/web` is a React + TypeScript SPA built with Vite, React Router, and TanStack Query.
+Charts use Recharts, and the code view uses a locally bundled Monaco (no CDN). The CSS is
+hand-written and token-based, with light and dark themes that follow the OS or a choice
+saved in Account settings. Every control is a native element and is keyboard-reachable.
+
+```bash
+npm run dev --workspace apps/web        # http://localhost:5173 (proxies /api to the API)
+npm run build --workspace apps/web      # typecheck + production bundle in apps/web/dist
+npm test --workspace apps/web           # Vitest + React Testing Library (mocked API)
+npm run e2e --workspace apps/web        # Playwright smoke against the real stack
+```
+
+**API access.** The browser calls `VITE_API_BASE_URL`. By default that is empty, meaning the
+same origin. In development, the Vite server proxies `/api` to `VITE_API_PROXY_TARGET`
+(default `http://localhost:$PORT`), so no CORS setup is needed. Both are read from the
+repo-root `.env`.
+
+**Auth.** The JWT is kept in memory and mirrored to `localStorage`, so a reload restores the
+session after validating it with `GET /api/auth/me`. Every request sends
+`Authorization: Bearer <token>`. Any `401` ends the session and the route guard returns to
+`/login`, which then sends you back to the page you were on. Forgot-password emails a
+single-use link that expires in 30 minutes. In development the link is printed to the API
+log, because no mail transport is configured.
+
+| Route                 | What it shows                                                                                                                                                                                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/login`, `/register` | Sign in and create an account                                                                                                                                                                                                             |
+| `/forgot-password`    | Request a reset link. The response is the same whether or not the account exists                                                                                                                                                          |
+| `/reset-password`     | Set a new password from the emailed link                                                                                                                                                                                                  |
+| `/projects`           | Project cards showing the last scan's grade, status, and critical/high/medium counts. Create, rename, and delete projects here                                                                                                            |
+| `/projects/:id`       | Drag-and-drop ZIP upload with a progress bar, plus the scan history                                                                                                                                                                       |
+| `/scans/:id`          | Live status, polled every 2 s (queued → running → completed/failed). Once completed: a dashboard (total, risk grade, trend vs the previous scan, severity donut, OWASP bars), report buttons, the findings table, and informational notes |
+| `/findings/:id`       | Monaco view of the file with the vulnerable lines highlighted. Explanation / Exploit & Impact / Fix tabs; Fix lists the steps and a before/after with a copy button                                                                       |
+| `/scans/:id/report`   | The HTML report in a sandboxed iframe, plus PDF and JSON downloads                                                                                                                                                                        |
+| `/account`            | Email, theme, and sign out                                                                                                                                                                                                                |
+
+- **Severity and confidence are always shown.** Findings with low confidence (< 50%) are
+  labeled **Needs review**. Route-level heuristics are labeled **Candidate**. Both kinds of
+  row are tinted in the findings table.
+- **Findings table filters** cover severity, OWASP category, minimum confidence, and file
+  path. Results are sorted by severity, with confidence and location as alternative sorts.
+  Filters are kept in the URL.
+- **Informational notes** (e.g. Juice Shop #15/#17/#33/#34) appear in a separate, distinctly
+  styled section. They are not findings and have no severity.
+- **Charts.** Severity is ordinal, so it uses a single red ramp that is darkest for critical
+  in light mode and brightest for critical in dark mode. Both modes were validated for
+  monotone lightness and contrast against the surface. The OWASP chart is one series in one
+  blue. Every chart has an HTML legend and a **Table** toggle, so no value is only reachable
+  through a tooltip.
+- **Code view.** `GET /api/scans/:id/source?path=` serves the extracted file. Lines flagged
+  by the secrets detector are replaced with their redacted snippet, so the code view never
+  re-exposes a secret.
+- **Reports.** Downloads use `fetch` with the Bearer token and are saved from a Blob. The HTML
+  report is shown in `<iframe sandbox>` with no scripts and an opaque origin, so its embedded
+  code can never run as the app.
+- **States.** Every data view has loading, empty, and error states. Long scans never block the
+  UI: you can leave the page and come back.
+
+**E2E.** `npm run e2e --workspace apps/web` registers a user, creates a project, uploads a
+small vulnerable app, waits for the dashboard, opens the SQL injection finding in Monaco,
+and deletes the project. It starts the API (on `E2E_API_PORT`, default 3100), the worker,
+and Vite unless they are already running. Postgres and Redis must be running, from
+`docker compose up -d`. It uses the preinstalled Chromium/Chrome (`CHROMIUM_PATH` or common
+install paths) with `--headless --no-sandbox`; Playwright browsers are never downloaded.
+
 ## Authentication
 
 All auth endpoints live under `/api/auth` and accept/return JSON.
 
-| Method | Path                 | Body                  | Success             | Errors                                    |
-| ------ | -------------------- | --------------------- | ------------------- | ----------------------------------------- |
-| POST   | `/api/auth/register` | `{ email, password }` | `201 { id, email }` | `400` invalid input, `409` email taken    |
-| POST   | `/api/auth/login`    | `{ email, password }` | `200 { token }`     | `401` invalid email or password (generic) |
-| GET    | `/api/auth/me`       | —                     | `200 { id, email }` | `401` missing/invalid token               |
+| Method | Path                        | Body                  | Success                             | Errors                                            |
+| ------ | --------------------------- | --------------------- | ----------------------------------- | ------------------------------------------------- |
+| POST   | `/api/auth/register`        | `{ email, password }` | `201 { id, email }`                 | `400` invalid input, `409` email taken            |
+| POST   | `/api/auth/login`           | `{ email, password }` | `200 { token }`                     | `401` invalid email or password (generic)         |
+| GET    | `/api/auth/me`              | —                     | `200 { id, email }`                 | `401` missing/invalid token                       |
+| POST   | `/api/auth/forgot-password` | `{ email }`           | `202 { message }` (always the same) | `400` invalid input                               |
+| POST   | `/api/auth/reset-password`  | `{ token, password }` | `204`                               | `400` invalid/used/expired token or weak password |
+
+Password reset stores only a SHA-256 hash of the 32-byte token. The token is single-use and
+expires after 30 minutes. A successful reset invalidates the user's other outstanding links.
+The link points at `APP_BASE_URL/reset-password`.
 
 Passwords must be at least 8 characters and are hashed with argon2id. `login` returns an
 HS256 JWT (signed with `JWT_SECRET`, 1-hour expiry, payload `{ sub, email }`). Send it on
@@ -449,13 +525,14 @@ users 1──* projects 1──* scans 1──* findings
                               └──* artifacts
 ```
 
-| Table       | Purpose                                                          | Key columns                                                                                                                                            |
-| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `users`     | Account owners                                                   | `email` (unique), `password_hash`                                                                                                                      |
-| `projects`  | A website codebase owned by a user                               | `user_id → users`, `name`                                                                                                                              |
-| `scans`     | One analysis run of a project                                    | `project_id → projects`, `status` (`queued`/`running`/`completed`/`failed`), `started_at`, `finished_at`, `summary_json`                               |
-| `findings`  | A detected vulnerability at a file/line                          | `scan_id → scans`, `detector_id`, `owasp_category`, `severity`, `confidence` (0–1), `file_path`, `line_start`, `line_end`, `snippet`, `fix_suggestion` |
-| `artifacts` | Files produced for a scan (uploaded ZIP, extracted tree, report) | `scan_id → scans`, `kind` (`raw_zip`/`extracted`/`report`), `storage_key`                                                                              |
+| Table                   | Purpose                                                          | Key columns                                                                                                                                            |
+| ----------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `users`                 | Account owners                                                   | `email` (unique), `password_hash`                                                                                                                      |
+| `projects`              | A website codebase owned by a user                               | `user_id → users`, `name`                                                                                                                              |
+| `scans`                 | One analysis run of a project                                    | `project_id → projects`, `status` (`queued`/`running`/`completed`/`failed`), `started_at`, `finished_at`, `summary_json`                               |
+| `findings`              | A detected vulnerability at a file/line                          | `scan_id → scans`, `detector_id`, `owasp_category`, `severity`, `confidence` (0–1), `file_path`, `line_start`, `line_end`, `snippet`, `fix_suggestion` |
+| `artifacts`             | Files produced for a scan (uploaded ZIP, extracted tree, report) | `scan_id → scans`, `kind` (`raw_zip`/`extracted`/`report`), `storage_key`                                                                              |
+| `password_reset_tokens` | Single-use password reset links                                  | `user_id → users`, `token_hash` (unique, SHA-256), `expires_at`, `used_at`                                                                             |
 
 All foreign keys cascade on delete (deleting a project removes its scans, findings, and
 artifacts) and are indexed; `findings` also has a composite index on `(scan_id, severity)`.
@@ -464,17 +541,18 @@ artifacts) and are indexed; `findings` also has a composite index on `(scan_id, 
 
 All routes require `Authorization: Bearer <token>`. Resources owned by another user return `404`.
 
-| Method | Path                      | Notes                                                                          |
-| ------ | ------------------------- | ------------------------------------------------------------------------------ |
-| POST   | `/api/projects`           | `{ name }` → `201` project                                                     |
-| GET    | `/api/projects`           | Current user's projects, newest first                                          |
-| GET    | `/api/projects/:id`       | One project                                                                    |
-| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                   |
-| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                    |
-| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                        |
-| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                              |
-| GET    | `/api/scans/:id`          | One scan with status and summary                                               |
-| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence` |
+| Method | Path                      | Notes                                                                                                 |
+| ------ | ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| POST   | `/api/projects`           | `{ name }` → `201` project                                                                            |
+| GET    | `/api/projects`           | Current user's projects, newest first, each with `lastScan` (status, rollup)                          |
+| GET    | `/api/projects/:id`       | One project                                                                                           |
+| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                                          |
+| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                                           |
+| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                                               |
+| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                                                     |
+| GET    | `/api/scans/:id`          | One scan with status and summary                                                                      |
+| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                        |
+| GET    | `/api/scans/:id/source`   | `?path=` → extracted file as text (secret lines redacted); `400` bad path, `413` > 2 MB, `415` binary |
 
 ## Status
 
@@ -491,3 +569,4 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 - [x] 11. Files, dependencies & misconfig detectors
 - [x] 12. Remediation engine
 - [x] 13. Report builder (JSON / HTML / PDF)
+- [x] 14. Frontend SPA

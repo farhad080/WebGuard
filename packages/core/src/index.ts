@@ -27,6 +27,20 @@ export interface Project {
   createdAt: IsoDateString;
 }
 
+/** Compact view of a project's most recent scan (for project cards). */
+export interface LastScanSummary {
+  id: string;
+  status: ScanStatus;
+  createdAt: IsoDateString;
+  finishedAt: IsoDateString | null;
+  /** Present once the scan completed. */
+  rollup: ScanRollup | null;
+}
+
+export interface ProjectWithLastScan extends Project {
+  lastScan: LastScanSummary | null;
+}
+
 // ---------------------------------------------------------------------------
 // Project profile (produced by the profiler, stored in scan summary_json.profile)
 // ---------------------------------------------------------------------------

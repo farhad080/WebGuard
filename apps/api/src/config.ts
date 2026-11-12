@@ -29,6 +29,10 @@ export const config = {
     return required('JWT_SECRET');
   },
   jwtExpiresIn: '1h' as const,
+  /** Public URL of the web app (used in password-reset links). */
+  get appBaseUrl(): string {
+    return (process.env.APP_BASE_URL ?? 'http://localhost:5173').replace(/\/+$/, '');
+  },
 
   get redisUrl(): string {
     return process.env.REDIS_URL ?? 'redis://localhost:6379';

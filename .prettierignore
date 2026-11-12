@@ -3,3 +3,5 @@ dist
 coverage
 package-lock.json
 packages/analysis/test/fixtures
+test-results
+playwright-report

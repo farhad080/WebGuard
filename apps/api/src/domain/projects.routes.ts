@@ -1,5 +1,6 @@
 import { unlink } from 'node:fs/promises';
 import type { Project } from '@prisma/client';
+import type { ProjectWithLastScan, ScanSummary } from '@webguard/core';
 import { Router } from 'express';
 import { authMiddleware } from '../auth/middleware.js';
 import { prisma } from '../db.js';
@@ -39,8 +40,24 @@ projectsRouter.get(
     const projects = await prisma.project.findMany({
       where: { userId: req.user!.id },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include: { scans: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 1 } },
     });
-    res.json(projects.map(toProject));
+    const body: ProjectWithLastScan[] = projects.map(({ scans, ...project }) => {
+      const last = scans[0];
+      return {
+        ...toProject(project),
+        lastScan: last
+          ? {
+              id: last.id,
+              status: last.status,
+              createdAt: last.createdAt.toISOString(),
+              finishedAt: last.finishedAt?.toISOString() ?? null,
+              rollup: (last.summaryJson as ScanSummary | null)?.rollup ?? null,
+            }
+          : null,
+      };
+    });
+    res.json(body);
   }),
 );
 
