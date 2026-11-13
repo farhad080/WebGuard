@@ -1,14 +1,16 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { Scan, ScanStatus } from '@webguard/core';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/endpoints';
 import { StatusBadge } from '../components/Badges';
 import { Dashboard } from '../components/Dashboard';
 import { FindingsTable } from '../components/FindingsTable';
 import { InformationalNotes } from '../components/InformationalNotes';
 import { ReportButtons } from '../components/ReportButtons';
+import { ProjectOverview } from '../components/overview/ProjectOverview';
 import { ErrorState, Loading } from '../components/States';
+import { Tabs } from '../components/Tabs';
 import { formatDateTime, formatDuration } from '../lib/findings';
 
 /** Poll cadence for an in-flight scan (mutable so tests can shorten it). */
@@ -82,6 +84,8 @@ function skippedDirsLabel(dirs: string[]): string {
 
 export function ScanPage() {
   const { scanId = '' } = useParams();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('tab') === 'overview' ? 'overview' : 'dashboard';
   const scan = useQuery({
     queryKey: ['scan', scanId],
     queryFn: () => api.getScan(scanId),
@@ -164,66 +168,92 @@ export function ScanPage() {
         </div>
       )}
 
+      {s.status === 'failed' && <ProjectOverview scanId={s.id} status={s.status} />}
+
       {completed && (
-        <>
-          {rollup ? (
-            <Dashboard rollup={rollup} previous={previous} scanId={s.id} />
-          ) : (
-            <p className="muted">This scan has no rollup (it predates the dashboard).</p>
-          )}
+        <Tabs
+          label="Scan views"
+          active={tab}
+          onChange={(id) => {
+            const next = new URLSearchParams(params);
+            if (id === 'dashboard') next.delete('tab');
+            else next.set('tab', id);
+            setParams(next, { replace: true });
+          }}
+          tabs={[
+            {
+              id: 'dashboard',
+              label: 'Dashboard & findings',
+              content: (
+                <>
+                  {rollup ? (
+                    <Dashboard rollup={rollup} previous={previous} scanId={s.id} />
+                  ) : (
+                    <p className="muted">This scan has no rollup (it predates the dashboard).</p>
+                  )}
 
-          <section className="card" aria-labelledby="reports-title">
-            <h2 id="reports-title">Reports</h2>
-            <ReportButtons scanId={s.id} />
-          </section>
+                  <section className="card" aria-labelledby="reports-title">
+                    <h2 id="reports-title">Reports</h2>
+                    <ReportButtons scanId={s.id} />
+                  </section>
 
-          {profile && (
-            <details className="card scan-meta">
-              <summary>Scanned project</summary>
-              <dl>
-                <dt>Languages</dt>
-                <dd>
-                  {profile.languages.map((l) => `${l.language} (${l.files})`).join(', ') || '—'}
-                </dd>
-                <dt>Frameworks</dt>
-                <dd>{profile.frameworks.map((f) => f.name).join(', ') || '—'}</dd>
-                <dt>Files parsed</dt>
-                <dd>
-                  {summary.filesParsed ?? 0} of {profile.sourceFiles.length} source files
-                  {summary.parseErrors ? ` · ${summary.parseErrors} with parse errors` : ''}
-                </dd>
-                {summary.skippedFileCount ? (
-                  <>
-                    <dt>Ignored</dt>
-                    <dd data-testid="skipped-files">
-                      {summary.skippedFileCount.toLocaleString()} dependency/build files
-                      {summary.skippedDirs?.length
-                        ? ` in ${skippedDirsLabel(summary.skippedDirs)}`
-                        : ''}{' '}
-                      <span className="muted">(not extracted or scanned)</span>
-                    </dd>
-                  </>
-                ) : null}
-                {summary.detectorErrors && summary.detectorErrors.length > 0 && (
-                  <>
-                    <dt>Detector errors</dt>
-                    <dd>{summary.detectorErrors.map((d) => d.detectorId).join(', ')}</dd>
-                  </>
-                )}
-              </dl>
-            </details>
-          )}
+                  {profile && (
+                    <details className="card scan-meta">
+                      <summary>Scanned project</summary>
+                      <dl>
+                        <dt>Languages</dt>
+                        <dd>
+                          {profile.languages.map((l) => `${l.language} (${l.files})`).join(', ') ||
+                            '—'}
+                        </dd>
+                        <dt>Frameworks</dt>
+                        <dd>{profile.frameworks.map((f) => f.name).join(', ') || '—'}</dd>
+                        <dt>Files parsed</dt>
+                        <dd>
+                          {summary.filesParsed ?? 0} of {profile.sourceFiles.length} source files
+                          {summary.parseErrors ? ` · ${summary.parseErrors} with parse errors` : ''}
+                        </dd>
+                        {summary.skippedFileCount ? (
+                          <>
+                            <dt>Ignored</dt>
+                            <dd data-testid="skipped-files">
+                              {summary.skippedFileCount.toLocaleString()} dependency/build files
+                              {summary.skippedDirs?.length
+                                ? ` in ${skippedDirsLabel(summary.skippedDirs)}`
+                                : ''}{' '}
+                              <span className="muted">(not extracted or scanned)</span>
+                            </dd>
+                          </>
+                        ) : null}
+                        {summary.detectorErrors && summary.detectorErrors.length > 0 && (
+                          <>
+                            <dt>Detector errors</dt>
+                            <dd>{summary.detectorErrors.map((d) => d.detectorId).join(', ')}</dd>
+                          </>
+                        )}
+                      </dl>
+                    </details>
+                  )}
 
-          {findings.isPending ? (
-            <Loading label="Loading findings…" />
-          ) : findings.isError ? (
-            <ErrorState error={findings.error} onRetry={() => findings.refetch()} />
-          ) : (
-            <FindingsTable findings={findings.data} />
-          )}
+                  {findings.isPending ? (
+                    <Loading label="Loading findings…" />
+                  ) : findings.isError ? (
+                    <ErrorState error={findings.error} onRetry={() => findings.refetch()} />
+                  ) : (
+                    <FindingsTable findings={findings.data} />
+                  )}
 
-          <InformationalNotes notes={summary.informationalNotes ?? []} />
-        </>
+                  <InformationalNotes notes={summary.informationalNotes ?? []} />
+                </>
+              ),
+            },
+            {
+              id: 'overview',
+              label: 'Project overview',
+              content: <ProjectOverview scanId={s.id} status={s.status} findings={findings.data} />,
+            },
+          ]}
+        />
       )}
     </div>
   );

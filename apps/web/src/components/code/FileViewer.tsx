@@ -32,17 +32,22 @@ const FOCUSABLE =
  * Modal full-file viewer for a finding's location: the file from the scan's extracted copy
  * (GET /api/scans/:id/file, the same fetch as the finding detail view), scrolled to and
  * highlighting the finding's lines, with every other finding in the file marked in the gutter
- * and listed in the side panel (selecting one moves the highlight to it).
+ * and listed in the side panel (selecting one moves the highlight to it). Opened from a file
+ * (e.g. the Project Overview tree) with no finding selected, it just marks every finding.
  */
 export function FileViewer({
-  finding,
+  scanId,
+  path,
+  finding = null,
   fileFindings,
   onSelect,
   onClose,
 }: {
-  /** The finding whose location was opened. */
-  finding: Finding;
-  /** All findings of the scan in the same file (including `finding`). */
+  scanId: string;
+  path: string;
+  /** The finding to highlight and scroll to, if any. */
+  finding?: Finding | null;
+  /** All findings of the scan in this file (including `finding`). */
   fileFindings: readonly Finding[];
   onSelect: (findingId: string) => void;
   onClose: () => void;
@@ -50,7 +55,7 @@ export function FileViewer({
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const file = useScanFile(finding.scanId, finding.filePath);
+  const file = useScanFile(scanId, path);
 
   const sorted = useMemo(
     () => [...fileFindings].sort((a, b) => a.lineStart - b.lineStart || a.lineEnd - b.lineEnd),
@@ -59,7 +64,7 @@ export function FileViewer({
   const marks = useMemo<FileMark[]>(
     () =>
       sorted
-        .filter((f) => f.id !== finding.id)
+        .filter((f) => f.id !== finding?.id)
         .map((f) => ({
           id: f.id,
           lineStart: f.lineStart,
@@ -67,7 +72,7 @@ export function FileViewer({
           severity: f.severity,
           label: findingTitle(f),
         })),
-    [sorted, finding.id],
+    [sorted, finding?.id],
   );
 
   // Focus the dialog on open, give focus back to the opener on close, lock page scroll.
@@ -121,7 +126,7 @@ export function FileViewer({
         <header className="file-viewer-head">
           <div className="file-viewer-title">
             <h2 id={titleId} className="mono">
-              {finding.filePath}
+              {path}
             </h2>
             <p className="muted small" data-testid="file-meta">
               {file.data && !file.isError ? (
@@ -145,24 +150,34 @@ export function FileViewer({
             Close <span aria-hidden="true">✕</span>
           </button>
           <div className="file-viewer-summary" data-testid="viewer-summary">
-            <SeverityBadge severity={finding.severity} />
-            <span className="file-viewer-summary-text">
-              <strong>{findingTitle(finding)}</strong>{' '}
-              <span className="muted">
-                ·{' '}
-                {finding.lineEnd > finding.lineStart
-                  ? `lines ${finding.lineStart}–${finding.lineEnd}`
-                  : `line ${finding.lineStart}`}
+            {finding ? (
+              <>
+                <SeverityBadge severity={finding.severity} />
+                <span className="file-viewer-summary-text">
+                  <strong>{findingTitle(finding)}</strong>{' '}
+                  <span className="muted">
+                    ·{' '}
+                    {finding.lineEnd > finding.lineStart
+                      ? `lines ${finding.lineStart}–${finding.lineEnd}`
+                      : `line ${finding.lineStart}`}
+                  </span>
+                </span>
+                <Link to={`/findings/${finding.id}`} className="small">
+                  Finding details →
+                </Link>
+              </>
+            ) : (
+              <span className="file-viewer-summary-text muted">
+                {sorted.length === 0
+                  ? 'No findings in this file.'
+                  : `${sorted.length} ${sorted.length === 1 ? 'finding' : 'findings'} marked in this file — select one to highlight it.`}
               </span>
-            </span>
-            <Link to={`/findings/${finding.id}`} className="small">
-              Finding details →
-            </Link>
+            )}
           </div>
         </header>
 
         <div className="file-viewer-body">
-          <nav className="file-viewer-list" aria-label={`Findings in ${finding.filePath}`}>
+          <nav className="file-viewer-list" aria-label={`Findings in ${path}`}>
             <p className="small muted">
               {sorted.length} {sorted.length === 1 ? 'finding' : 'findings'} in this file
             </p>
@@ -171,8 +186,8 @@ export function FileViewer({
                 <li key={f.id}>
                   <button
                     type="button"
-                    className={`file-viewer-item${f.id === finding.id ? ' is-active' : ''}`}
-                    aria-current={f.id === finding.id ? 'true' : undefined}
+                    className={`file-viewer-item${f.id === finding?.id ? ' is-active' : ''}`}
+                    aria-current={f.id === finding?.id ? 'true' : undefined}
                     onClick={() => onSelect(f.id)}
                   >
                     <span className={`swatch sev-${f.severity}`} aria-hidden="true" />
@@ -189,23 +204,27 @@ export function FileViewer({
 
           <div className="file-viewer-code">
             {file.isPending ? (
-              <Loading label={`Loading ${finding.filePath}…`} />
+              <Loading label={`Loading ${path}…`} />
             ) : file.isError ? (
-              <FileUnavailable error={file.error} path={finding.filePath} />
+              <FileUnavailable error={file.error} path={path} />
             ) : file.data.binary ? (
               <BinaryFile file={file.data} />
             ) : (
               <>
-                <TruncatedNotice file={file.data} range={finding} />
+                <TruncatedNotice file={file.data} range={finding ?? undefined} />
                 <div className="file-viewer-editor">
                   <Suspense fallback={<Loading label="Loading editor…" />}>
                     <MonacoCodeView
-                      path={finding.filePath}
+                      path={path}
                       code={file.data.content}
-                      lineStart={finding.lineStart}
-                      lineEnd={finding.lineEnd}
+                      lineStart={finding?.lineStart}
+                      lineEnd={finding?.lineEnd}
                       marks={marks}
-                      ariaLabel={`Source of ${formatLocation(finding)}, the finding's lines highlighted, ${marks.length} other ${marks.length === 1 ? 'finding' : 'findings'} marked`}
+                      ariaLabel={
+                        finding
+                          ? `Source of ${formatLocation(finding)}, the finding's lines highlighted, ${marks.length} other ${marks.length === 1 ? 'finding' : 'findings'} marked`
+                          : `Source of ${path}, ${marks.length} ${marks.length === 1 ? 'finding' : 'findings'} marked`
+                      }
                     />
                   </Suspense>
                 </div>

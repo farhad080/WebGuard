@@ -6,6 +6,7 @@ import type {
   Scan,
   ScanComparison,
   ScanFile,
+  ScanStatsResponse,
   Severity,
 } from '@webguard/core';
 import { ApiError, apiFetch, apiJson } from './client';
@@ -63,6 +64,8 @@ export const api = {
   getFinding: (id: string) => apiJson<Finding>(`/api/findings/${enc(id)}`),
   compareScans: (scanId: string, againstId: string) =>
     apiJson<ScanComparison>(`/api/scans/${enc(scanId)}/compare?against=${enc(againstId)}`),
+  /** Project Overview statistics stored with the scan (partial for a failed scan). */
+  getStats: (scanId: string) => apiJson<ScanStatsResponse>(`/api/scans/${enc(scanId)}/stats`),
   /** One file of the scan's extracted copy (secret-redacted, size-capped). */
   getFile: (scanId: string, path: string) =>
     apiJson<ScanFile>(`/api/scans/${enc(scanId)}/file?path=${enc(path)}`),

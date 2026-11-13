@@ -5,12 +5,15 @@ import type {
   IgnoreReason,
   Language,
   LanguageStat,
+  LocCounts,
   ManifestFile,
+  PackageManagerInfo,
   ProjectProfile,
   SensitivePath,
   SensitivePathCategory,
   SourceFile,
 } from '@webguard/core';
+import { countLines, countLoc } from '../stats/loc.js';
 import { BINARY_EXTENSIONS, detectLanguage } from './languages.js';
 
 export interface ProfilerOptions {
@@ -150,6 +153,85 @@ interface WalkedFile {
   bytes: number;
 }
 
+/** What profiling learned about one file (for the Project Overview statistics). */
+export interface InventoryFile {
+  path: string;
+  bytes: number;
+  language: Language | null;
+  /** How the analysis treats it. */
+  kind: 'source' | 'binary' | 'too-large' | 'unrecognized';
+  /** Line count of a text file within the size limit; null when not read (binary / too large). */
+  lines: number | null;
+  /** Code/comment/blank split, for files in a recognized language. */
+  loc: LocCounts | null;
+}
+
+/**
+ * Per-file facts gathered in the same pass as the profile: every file is read at most once
+ * (in full when it is a text file within `maxFileBytes`, which also yields its line counts).
+ */
+export interface ProjectInventory {
+  files: InventoryFile[];
+  /** Every extracted directory (project-relative, `/`-separated), excluding the root. */
+  folders: string[];
+  /** Likely entry points: package.json main / start script, then common conventions. */
+  entryPoints: string[];
+  packageManagers: PackageManagerInfo[];
+}
+
+const LOCKFILE_MANAGERS: Record<string, string> = {
+  'package-lock.json': 'npm',
+  'npm-shrinkwrap.json': 'npm',
+  'yarn.lock': 'yarn',
+  'pnpm-lock.yaml': 'pnpm',
+  'Pipfile.lock': 'pipenv',
+  'poetry.lock': 'poetry',
+  'composer.lock': 'composer',
+  'Gemfile.lock': 'bundler',
+  'go.sum': 'go modules',
+};
+/** Manifest → the package manager it implies when no lockfile of that ecosystem exists. */
+const MANIFEST_MANAGERS: Record<string, { name: string; lockfiles: string[] }> = {
+  'package.json': {
+    name: 'npm',
+    lockfiles: ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml'],
+  },
+  'requirements.txt': { name: 'pip', lockfiles: ['Pipfile.lock', 'poetry.lock'] },
+  'pyproject.toml': { name: 'pip', lockfiles: ['Pipfile.lock', 'poetry.lock'] },
+  Pipfile: { name: 'pipenv', lockfiles: ['Pipfile.lock'] },
+  'composer.json': { name: 'composer', lockfiles: ['composer.lock'] },
+  Gemfile: { name: 'bundler', lockfiles: ['Gemfile.lock'] },
+  'go.mod': { name: 'go modules', lockfiles: ['go.sum'] },
+  'pom.xml': { name: 'maven', lockfiles: [] },
+  'build.gradle': { name: 'gradle', lockfiles: [] },
+};
+
+/** Conventional entry files, most specific first. */
+const ENTRY_CONVENTIONS = [
+  'server.js', 'server.ts', 'app.js', 'app.ts', 'index.js', 'index.ts', 'main.js', 'main.ts',
+  'src/server.ts', 'src/server.js', 'src/index.ts', 'src/index.js', 'src/main.ts', 'src/main.js',
+  'src/app.ts', 'src/app.js', 'bin/www', 'manage.py', 'app.py', 'main.py', 'wsgi.py', 'run.py',
+  'index.php', 'public/index.php', 'main.go', 'cmd/main.go', 'Program.cs', 'config.ru',
+  'index.html', 'public/index.html',
+]; // prettier-ignore
+
+const RUNNERS = new Set(['node', 'nodemon', 'ts-node', 'ts-node-dev', 'tsx', 'bun', 'deno']);
+
+/** `node server.js`, `nodemon --watch src src/app.ts`, `ts-node ./x.ts` → the script's file. */
+export function fileFromStartScript(script: string): string | null {
+  for (const command of script.split(/&&|\|\||;/)) {
+    const words = command.trim().split(/\s+/);
+    const runner = words.findIndex((w) => RUNNERS.has(w));
+    if (runner < 0) continue;
+    // The first argument that looks like a file (has an extension or a path separator).
+    const file = words
+      .slice(runner + 1)
+      .find((w) => !w.startsWith('-') && w !== 'run' && /[./]/.test(w) && !/^\d/.test(w));
+    if (file) return file.replace(/^\.\//, '');
+  }
+  return null;
+}
+
 /**
  * Builds a {@link ProjectProfile} for an extracted project: what languages and frameworks it
  * uses, where its manifests and security-relevant files are, and which files to analyze.
@@ -164,13 +246,34 @@ export class ProfilerService {
   }
 
   async profile(rootDir: string): Promise<ProjectProfile> {
+    return (await this.run(rootDir, false)).profile;
+  }
+
+  /** The profile plus per-file facts (sizes, line counts, LOC split), in the same single pass. */
+  async profileWithInventory(
+    rootDir: string,
+  ): Promise<{ profile: ProjectProfile; inventory: ProjectInventory }> {
+    const { profile, inventory } = await this.run(rootDir, true);
+    return { profile, inventory: inventory! };
+  }
+
+  private async run(
+    rootDir: string,
+    collect: boolean,
+  ): Promise<{ profile: ProjectProfile; inventory?: ProjectInventory }> {
     const byReason: Record<IgnoreReason, number> = {
       'ignored-dir': 0,
       binary: 0,
       'too-large': 0,
       unrecognized: 0,
     };
-    const files = await this.walk(path.resolve(rootDir), byReason);
+    const folders: string[] = [];
+    const files = await this.walk(path.resolve(rootDir), byReason, folders);
+    const inventoryFiles: InventoryFile[] = [];
+    let rootPackageJson: Record<string, unknown> | null = null;
+    const record = (file: WalkedFile, entry: Omit<InventoryFile, 'path' | 'bytes'>) => {
+      if (collect) inventoryFiles.push({ path: file.rel, bytes: file.bytes, ...entry });
+    };
 
     const languageStats = new Map<Language, LanguageStat>();
     const sourceFiles: SourceFile[] = [];
@@ -196,28 +299,56 @@ export class ProfilerService {
         manifests.push({ path: file.rel, type: base, kind: manifestKind });
         const runtime = RUNTIME_BY_MANIFEST[base];
         if (runtime) addFramework({ name: runtime, kind: 'runtime', evidence: file.rel });
-        for (const fw of await this.frameworksFromManifest(file, base)) addFramework(fw);
+        const onPackageJson = (pkg: Record<string, unknown>) => {
+          if (file.rel === 'package.json') rootPackageJson = pkg;
+        };
+        for (const fw of await this.frameworksFromManifest(file, base, onPackageJson)) {
+          addFramework(fw);
+        }
       }
 
       const ext = path.posix.extname(base).toLowerCase();
       if (BINARY_EXTENSIONS.has(ext)) {
         byReason.binary++;
+        record(file, { language: null, kind: 'binary', lines: null, loc: null });
         continue;
       }
       if (file.bytes > this.maxFileBytes) {
         byReason['too-large']++;
+        record(file, {
+          language: detectLanguage(base),
+          kind: 'too-large',
+          lines: null,
+          loc: null,
+        });
         continue;
       }
-      const head = await readHead(file.abs);
+      // With an inventory, the one read is a full read (line counts); otherwise just the head.
+      const content = collect ? await readFile(file.abs) : null;
+      const head = content ? content.subarray(0, SNIFF_BYTES) : await readHead(file.abs);
       if (looksBinary(head)) {
         byReason.binary++;
+        record(file, { language: null, kind: 'binary', lines: null, loc: null });
         continue;
       }
       const language = detectLanguage(base, head.toString('utf8'));
+      const text = content?.toString('utf8');
       if (!language) {
         byReason.unrecognized++;
+        record(file, {
+          language: null,
+          kind: 'unrecognized',
+          lines: text === undefined ? null : countLines(text),
+          loc: null,
+        });
         continue;
       }
+      record(file, {
+        language,
+        kind: 'source',
+        lines: text === undefined ? null : countLines(text),
+        loc: text === undefined ? null : countLoc(text, language),
+      });
 
       sourceFiles.push({ path: file.rel, language, bytes: file.bytes });
       const stat = languageStats.get(language) ?? { language, files: 0, bytes: 0 };
@@ -227,7 +358,7 @@ export class ProfilerService {
     }
 
     const ignoredTotal = Object.values(byReason).reduce((a, b) => a + b, 0);
-    return {
+    const profile: ProjectProfile = {
       languages: [...languageStats.values()].sort(
         (a, b) => b.files - a.files || a.language.localeCompare(b.language),
       ),
@@ -238,10 +369,24 @@ export class ProfilerService {
       ignored: { total: ignoredTotal, byReason },
       totals: { files: files.length, bytes: totalBytes },
     };
+    if (!collect) return { profile };
+    return {
+      profile,
+      inventory: {
+        files: inventoryFiles,
+        folders,
+        entryPoints: entryPointsOf(rootPackageJson, new Set(files.map((f) => f.rel))),
+        packageManagers: packageManagersOf(manifests),
+      },
+    };
   }
 
   /** Recursively lists regular files, skipping ignored dirs and never following symlinks. */
-  private async walk(root: string, byReason: Record<IgnoreReason, number>): Promise<WalkedFile[]> {
+  private async walk(
+    root: string,
+    byReason: Record<IgnoreReason, number>,
+    folders: string[],
+  ): Promise<WalkedFile[]> {
     const out: WalkedFile[] = [];
     const visit = async (dir: string): Promise<void> => {
       const entries = await readdir(dir, { withFileTypes: true });
@@ -253,6 +398,7 @@ export class ProfilerService {
             byReason['ignored-dir'] += await countFiles(abs);
             continue;
           }
+          folders.push(path.relative(root, abs).split(path.sep).join('/'));
           await visit(abs);
         } else if (entry.isFile()) {
           const rel = path.relative(root, abs).split(path.sep).join('/');
@@ -267,11 +413,13 @@ export class ProfilerService {
   private async frameworksFromManifest(
     file: WalkedFile,
     base: string,
+    onPackageJson?: (pkg: Record<string, unknown>) => void,
   ): Promise<DetectedFramework[]> {
     if (file.bytes > this.maxFileBytes) return [];
     try {
       if (base === 'package.json') {
         const pkg = JSON.parse(await readFile(file.abs, 'utf8')) as Record<string, unknown>;
+        if (pkg && typeof pkg === 'object') onPackageJson?.(pkg);
         const deps = new Set<string>();
         for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
           const value = pkg[field];
@@ -313,4 +461,47 @@ async function countFiles(dir: string): Promise<number> {
     // unreadable: count nothing
   }
   return count;
+}
+
+function entryPointsOf(pkg: Record<string, unknown> | null, present: Set<string>): string[] {
+  const out: string[] = [];
+  const add = (p: string | null | undefined) => {
+    const clean = p?.trim().replace(/^\.\//, '');
+    if (clean && !out.includes(clean)) out.push(clean);
+  };
+  if (pkg) {
+    if (typeof pkg.main === 'string') add(pkg.main);
+    const scripts = pkg.scripts as Record<string, unknown> | undefined;
+    for (const name of ['start', 'dev', 'serve']) {
+      const script = scripts?.[name];
+      if (typeof script === 'string') add(fileFromStartScript(script));
+    }
+  }
+  for (const candidate of ENTRY_CONVENTIONS) if (present.has(candidate)) add(candidate);
+  return out.slice(0, 5);
+}
+
+function packageManagersOf(manifests: readonly ManifestFile[]): PackageManagerInfo[] {
+  const out: PackageManagerInfo[] = [];
+  const seen = new Set<string>();
+  // Root-level files first, then by path.
+  const sorted = [...manifests].sort(
+    (a, b) => a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path),
+  );
+  const lockTypes = new Set(sorted.filter((m) => m.kind === 'lockfile').map((m) => m.type));
+  for (const m of sorted) {
+    const name = LOCKFILE_MANAGERS[m.type];
+    if (m.kind === 'lockfile' && name && !seen.has(name)) {
+      seen.add(name);
+      out.push({ name, lockfile: m.path });
+    }
+  }
+  for (const m of sorted) {
+    const implied = MANIFEST_MANAGERS[m.type];
+    if (m.kind !== 'manifest' || !implied) continue;
+    if (implied.lockfiles.some((l) => lockTypes.has(l)) || seen.has(implied.name)) continue;
+    seen.add(implied.name);
+    out.push({ name: implied.name, lockfile: null });
+  }
+  return out;
 }

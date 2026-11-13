@@ -380,3 +380,161 @@ export type ScanFileMissingReason =
   | 'not_ready'
   /** No such file in the extracted copy. */
   | 'not_found';
+
+// ---------------------------------------------------------------------------
+// Project Overview statistics (scans.stats_json, GET /api/scans/:id/stats)
+// ---------------------------------------------------------------------------
+
+/** Lines of code split by kind (a line-based heuristic per language). */
+export interface LocCounts {
+  code: number;
+  comment: number;
+  blank: number;
+  /** code + comment + blank. */
+  total: number;
+}
+
+/** How deeply the detectors analyze a language. */
+export type AnalysisDepth = 'full-ast' | 'pattern-only';
+
+export interface LanguageBreakdown {
+  language: Language;
+  files: number;
+  bytes: number;
+  loc: LocCounts;
+  analysisDepth: AnalysisDepth;
+  /** "full AST analysis" or "secrets/crypto/deps/config only". */
+  analysisLabel: string;
+}
+
+export interface FileRank {
+  path: string;
+  bytes: number;
+  /** Line count; null for a binary file or one over the analysis size limit (not read). */
+  lines: number | null;
+  language: Language | null;
+}
+
+/** One node of the (capped) folder tree. Counts cover the whole subtree, capped or not. */
+export interface StatsTreeNode {
+  /** Basename ('' for the project root). */
+  name: string;
+  /** `/`-separated project-relative path ('' for the root). */
+  path: string;
+  type: 'dir' | 'file';
+  /** Files in this subtree (1 for a file). */
+  files: number;
+  /** Findings in this subtree. */
+  findings: number;
+  /** Most severe finding in this subtree; null when there are none. */
+  worstSeverity: Severity | null;
+  /** Only for files. */
+  language?: Language | null;
+  /** Only for directories: children shown (directories first, then files, by name). */
+  children?: StatsTreeNode[];
+  /** Only for directories: children left out by the depth/size caps. */
+  omitted?: { dirs: number; files: number };
+}
+
+export interface PackageManagerInfo {
+  /** e.g. "npm", "yarn", "pnpm", "pipenv", "poetry", "composer", "bundler", "go modules". */
+  name: string;
+  /** The lockfile that revealed it; null when inferred from a manifest without a lockfile. */
+  lockfile: string | null;
+}
+
+export interface DependencyStats {
+  /** Unique package names declared in a manifest (package.json). */
+  direct: number;
+  /** Unique package names that appear only in a lockfile. */
+  transitive: number;
+  total: number;
+  /** Unique packages with a known vulnerability (A11). */
+  vulnerable: number;
+  /** Unique packages flagged end-of-life / unmaintained (A11). */
+  outdated: number;
+  /** Suspected typosquats (A11), with the package they imitate when known. */
+  typosquats: Array<{ name: string; target: string | null }>;
+  /** Manifests and lockfiles the counts come from. */
+  manifests: string[];
+}
+
+export interface SkippedStats {
+  /** Files in ignored dependency/build/VCS directories (never extracted or analyzed). */
+  ignoredDirFiles: number;
+  /** The top-most ignored directories (capped list). */
+  ignoredDirs: string[];
+  /** Binary files (images, fonts, archives, …): kept but not analyzed. */
+  binary: number;
+  /** Files larger than ANALYSIS_MAX_FILE_BYTES: kept but not analyzed. */
+  tooLarge: number;
+  /** Text files in a format no detector reads (e.g. LICENSE, .txt). */
+  unrecognized: number;
+  /** Symlinks, special and encrypted archive entries: never extracted. */
+  unsupportedEntries: number;
+}
+
+export type StatsStage = 'upload' | 'extraction' | 'analysis' | 'complete';
+
+export interface ProjectStats {
+  version: 1;
+  /** 'partial' when the scan failed: only the stages that finished are filled in. */
+  status: 'complete' | 'partial';
+  /** The last pipeline stage whose statistics are included. */
+  stage: StatsStage;
+  computedAt: IsoDateString;
+  size: {
+    /** Extracted files (outside ignored directories). */
+    files: number | null;
+    folders: number | null;
+    zipBytes: number | null;
+    unpackedBytes: number | null;
+    /** Lines of code over every file in a recognized language. */
+    loc: LocCounts | null;
+    /** Top 5 by bytes. */
+    largestFiles: FileRank[];
+    /** Top 5 by lines. */
+    longestFiles: FileRank[];
+  };
+  /** By lines, descending. */
+  languages: LanguageBreakdown[];
+  stack: {
+    frameworks: DetectedFramework[];
+    /** Most likely first. */
+    entryPoints: string[];
+    packageManagers: PackageManagerInfo[];
+  } | null;
+  tree: StatsTreeNode | null;
+  dependencies: DependencyStats | null;
+  security: {
+    total: number;
+    bySeverity: Record<Severity, number>;
+    byOwaspCategory: Partial<Record<OwaspCategory, number>>;
+    /** Top 5 files by finding count. */
+    topFiles: Array<{ path: string; findings: number; worstSeverity: Severity }>;
+    /** The scan rollup's numbers (same as the dashboard and reports). */
+    riskScore: number;
+    grade: RiskGrade;
+    gradeReason: string;
+  } | null;
+  skipped: SkippedStats;
+  scan: {
+    startedAt: IsoDateString | null;
+    finishedAt: IsoDateString | null;
+    durationMs: number | null;
+    /** Detector rules that ran, in execution order. */
+    rules: string[];
+    filesParsed: number | null;
+    parseErrors: number | null;
+  };
+}
+
+/** GET /api/scans/:id/stats */
+export interface ScanStatsResponse {
+  scanId: string;
+  status: ScanStatus;
+  /** Null while the scan is queued/running, or for a scan that predates statistics. */
+  stats: ProjectStats | null;
+  /** The failure reason of a failed scan. */
+  error: string | null;
+}

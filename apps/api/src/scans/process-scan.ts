@@ -1,14 +1,17 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Prisma } from '@prisma/client';
 import {
+  buildProjectStats,
   countFindings,
   INFORMATIONAL_NOTES,
+  type ExtractionFacts,
+  type ProjectStatsInput,
   type DetectorRegistry,
   type RemediationService,
 } from '@webguard/analysis';
-import type { ScanSummary } from '@webguard/core';
+import type { ProjectStats, ScanSummary } from '@webguard/core';
 import { config } from '../config.js';
 import { computeRollup } from '../reports/rollup.js';
 import { prisma } from '../db.js';
@@ -77,9 +80,10 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
   const extractor = new ExtractorService({ ...config.extraction, ...options.limits });
 
   // Atomic claim: only a queued scan can start, so a duplicate job is a no-op.
+  const startedAt = new Date();
   const claimed = await prisma.scan.updateMany({
     where: { id: scanId, status: 'queued' },
-    data: { status: 'running', startedAt: new Date() },
+    data: { status: 'running', startedAt },
   });
   if (claimed.count === 0) return;
 
@@ -87,6 +91,30 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
   const maxHeapMb = options.maxHeapMb ?? config.scanMaxHeapMb;
   const deadline = Date.now() + timeoutMs;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `webguard-scan-${scanId}-`));
+  // What each finished stage produced, for the Project Overview statistics (partial on failure).
+  let zipBytes: number | null = null;
+  let extraction: ExtractionFacts | null = null;
+  let analysis: AnalysisOutput | null = null;
+  const statsInput = (
+    stage: ProjectStatsInput['stage'],
+    finishedAt: Date,
+    extra: Partial<ProjectStatsInput> = {},
+  ): ProjectStatsInput => ({
+    stage,
+    zipBytes,
+    extraction,
+    profile: analysis?.profile,
+    inventory: analysis?.inventory,
+    dependencies: analysis?.dependencies,
+    scan: {
+      startedAt,
+      finishedAt,
+      rules: analysis?.detectors ?? [],
+      filesParsed: analysis?.filesParsed ?? null,
+      parseErrors: analysis?.parseErrors ?? null,
+    },
+    ...extra,
+  });
   try {
     const raw = await prisma.artifact.findFirst({ where: { scanId, kind: 'raw_zip' } });
     if (!raw) throw new ExtractionError('No uploaded archive found for this scan');
@@ -94,8 +122,16 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
     const zipPath = path.join(tempDir, 'upload.zip');
     const extractDir = path.join(tempDir, 'src');
     await storage.downloadToFile(raw.storageKey, zipPath);
+    zipBytes = (await stat(zipPath)).size;
 
     const result = await withDeadline(extractor.extract(zipPath, extractDir), deadline, timeoutMs);
+    extraction = {
+      filesExtracted: result.filesExtracted,
+      totalBytes: result.totalBytes,
+      skippedFileCount: result.skippedFileCount,
+      skippedDirs: result.skippedDirs,
+      skippedEntries: result.skippedEntries,
+    };
 
     const extractedKey = storageKeys.extracted(scanId);
     await uploadDirectory(storage, extractDir, extractedKey);
@@ -105,7 +141,6 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
 
     // Analysis (profile → parse → detect → remediate) only reads the extracted files.
     const network = { osv: config.osvAdvisories };
-    let analysis: AnalysisOutput;
     if (options.detectors || options.remediation) {
       const maxHeapBytes = maxHeapMb * 1024 * 1024;
       analysis = await withDeadline(
@@ -132,6 +167,7 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
       );
     }
     const { findings, profile } = analysis;
+    const output = analysis;
     const counts = countFindings(findings);
 
     const summary: ScanSummary = {
@@ -172,9 +208,32 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
         // dashboard and every report read the same numbers.
         const persisted = await tx.finding.findMany({
           where: { scanId },
-          select: { severity: true, owaspCategory: true, confidence: true },
+          select: {
+            severity: true,
+            owaspCategory: true,
+            confidence: true,
+            filePath: true,
+            detectorId: true,
+            evidence: true,
+            contributingDetectors: true,
+          },
         });
         const rollup = computeRollup(persisted);
+        const finishedAt = new Date();
+        // Project Overview statistics: computed once, from the same persisted rows and rollup.
+        const stats = buildProjectStats(
+          statsInput('complete', finishedAt, {
+            findings: persisted,
+            rollup,
+            scan: {
+              startedAt,
+              finishedAt,
+              rules: output.detectors,
+              filesParsed: output.filesParsed,
+              parseErrors: output.parseErrors,
+            },
+          }),
+        );
         const finalSummary: ScanSummary = {
           ...summary,
           rollup,
@@ -186,8 +245,9 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
           where: { id: scanId },
           data: {
             status: 'completed',
-            finishedAt: new Date(),
+            finishedAt,
             summaryJson: finalSummary as unknown as Prisma.InputJsonObject,
+            statsJson: stats as unknown as Prisma.InputJsonObject,
           },
         });
       },
@@ -204,10 +264,26 @@ export async function processScan(scanId: string, options: ProcessScanOptions = 
     await prisma.artifact
       .deleteMany({ where: { scanId, kind: 'extracted' } })
       .catch(() => undefined);
+    // Whatever the finished stages produced (upload size, extraction, profile) is kept, so
+    // the overview can still show it next to the failure reason.
+    const finishedAt = new Date();
+    let partial: ProjectStats | null = null;
+    try {
+      partial = buildProjectStats(
+        statsInput(analysis ? 'analysis' : extraction ? 'extraction' : 'upload', finishedAt),
+      );
+    } catch (statsErr) {
+      console.error(`[worker] could not compute partial stats of scan ${scanId}`, statsErr);
+    }
     await prisma.scan
       .updateMany({
         where: { id: scanId },
-        data: { status: 'failed', finishedAt: new Date(), summaryJson: { error: message } },
+        data: {
+          status: 'failed',
+          finishedAt,
+          summaryJson: { error: message },
+          ...(partial ? { statsJson: partial as unknown as Prisma.InputJsonObject } : {}),
+        },
       })
       .catch((updateErr) =>
         console.error(`[worker] could not mark scan ${scanId} failed`, updateErr),

@@ -11,12 +11,22 @@ export function Tabs({
   tabs,
   label,
   initial,
+  active: controlled,
+  onChange,
 }: {
   tabs: TabDef[];
   label: string;
   initial?: string;
+  /** Controlled selection (e.g. kept in the URL); falls back to internal state. */
+  active?: string;
+  onChange?: (id: string) => void;
 }) {
-  const [active, setActive] = useState(initial ?? tabs[0]?.id);
+  const [own, setOwn] = useState(initial ?? tabs[0]?.id);
+  const active = controlled ?? own;
+  const setActive = (id: string) => {
+    setOwn(id);
+    onChange?.(id);
+  };
   const baseId = useId();
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
 

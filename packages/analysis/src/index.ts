@@ -2,8 +2,28 @@
 export {
   ProfilerService,
   DEFAULT_IGNORED_DIRS,
+  fileFromStartScript,
   type ProfilerOptions,
+  type InventoryFile,
+  type ProjectInventory,
 } from './profiler/profiler.js';
+
+// Project Overview statistics
+export { countLoc, countLines, emptyLoc, addLoc } from './stats/loc.js';
+export {
+  buildProjectStats,
+  buildTree,
+  dependencyStatsOf,
+  dependencyCountsOf,
+  analysisDepthOf,
+  DEFAULT_TREE_LIMITS,
+  type ProjectStatsInput,
+  type StatsFinding,
+  type StatsRollup,
+  type DependencyCounts,
+  type ExtractionFacts,
+  type TreeLimits,
+} from './stats/project-stats.js';
 export { ignoredDirOf } from './profiler/ignored-dirs.js';
 export { BINARY_EXTENSIONS, detectLanguage, CODE_LANGUAGES } from './profiler/languages.js';
 

@@ -260,6 +260,8 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
 
       {viewed && (
         <FileViewer
+          scanId={viewed.scanId}
+          path={viewed.filePath}
           finding={viewed}
           fileFindings={fileFindings}
           onSelect={(id) => openViewer(id, true)}

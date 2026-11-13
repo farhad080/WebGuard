@@ -1,5 +1,13 @@
 import type { Prisma, Scan } from '@prisma/client';
-import type { Finding, ScanComparison, ScanRef, ScanSummary, Severity } from '@webguard/core';
+import type {
+  Finding,
+  ProjectStats,
+  ScanComparison,
+  ScanRef,
+  ScanStatsResponse,
+  ScanSummary,
+  Severity,
+} from '@webguard/core';
 import { Router } from 'express';
 import { authMiddleware } from '../auth/middleware.js';
 import { prisma } from '../db.js';
@@ -55,6 +63,35 @@ scansRouter.get(
       orderBy: [{ filePath: 'asc' }, { lineStart: 'asc' }, { id: 'asc' }],
     });
     res.json(findings.map(toFinding));
+  }),
+);
+
+/**
+ * Project Overview statistics, exactly as the worker stored them when the scan finished (never
+ * recomputed here). A failed scan returns the partial statistics of the stages it completed
+ * (`stats.status: 'partial'`) plus its error; a queued/running scan, or one that predates
+ * statistics, returns `stats: null`.
+ */
+scansRouter.get(
+  '/:id/stats',
+  asyncHandler(async (req, res) => {
+    const id = parseId(req.params.id);
+    const scan = id && (await findOwnedScan(req.user!.id, id));
+    if (!scan) {
+      res.status(404).json(notFound);
+      return;
+    }
+    const body: ScanStatsResponse = {
+      scanId: scan.id,
+      status: scan.status,
+      stats: (scan.statsJson as ProjectStats | null) ?? null,
+      error:
+        scan.status === 'failed'
+          ? ((scan.summaryJson as ScanSummary | null)?.error ?? 'The scan failed')
+          : null,
+    };
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.json(body);
   }),
 );
 

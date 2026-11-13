@@ -12,8 +12,9 @@ const NO_MARKS: readonly FileMark[] = [];
 export interface CodeViewProps {
   path: string;
   code: string;
-  lineStart: number;
-  lineEnd: number;
+  /** The finding's lines to highlight and reveal; omit to only show the marks. */
+  lineStart?: number;
+  lineEnd?: number;
   /** Other findings in the same file: marked in the gutter and the overview ruler. */
   marks?: readonly FileMark[];
   /** Overrides the accessible name of the editor. */
@@ -63,7 +64,10 @@ export default function MonacoCodeView({
           ]
         : [];
     });
-    const active = clampRange({ lineStart, lineEnd }, lineCount);
+    const active =
+      lineStart === undefined
+        ? null
+        : clampRange({ lineStart, lineEnd: lineEnd ?? lineStart }, lineCount);
     decorations.current = editor.createDecorationsCollection([
       ...others,
       ...(active
@@ -112,7 +116,11 @@ export default function MonacoCodeView({
         lineNumbersMinChars: 4,
         automaticLayout: true,
         contextmenu: false,
-        ariaLabel: ariaLabel ?? `Source of ${path}, lines ${lineStart} to ${lineEnd} highlighted`,
+        ariaLabel:
+          ariaLabel ??
+          (lineStart === undefined
+            ? `Source of ${path}`
+            : `Source of ${path}, lines ${lineStart} to ${lineEnd ?? lineStart} highlighted`),
       }}
     />
   );

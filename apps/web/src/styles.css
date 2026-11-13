@@ -1451,3 +1451,260 @@ dd {
   align-items: center;
   gap: 6px;
 }
+
+/* ---------- project overview ---------- */
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.overview .notice {
+  margin: 0;
+}
+.overview-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+.overview-tiles .stat-value {
+  font-size: 1.6rem;
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.overview-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.overview h4 {
+  margin: 14px 0 6px;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+.chart-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.segmented .btn {
+  border-radius: 0;
+  border: 0;
+}
+.segmented .btn[aria-pressed='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Share bars: one series per row; the value is printed in text ink beside it. */
+.share-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.share-list li {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.share-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+}
+.share-bar {
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.share-bar > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: 0 4px 4px 0;
+}
+.sev-bar-critical > span {
+  background: var(--sev-critical);
+}
+.sev-bar-high > span {
+  background: var(--sev-high);
+}
+.sev-bar-medium > span {
+  background: var(--sev-medium);
+}
+.sev-bar-low > span {
+  background: var(--sev-low);
+}
+.sev-bar-info > span {
+  background: var(--sev-info);
+}
+.share-value {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 4.5rem;
+}
+.depth-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.depth-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.badge-depth-full {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  color: var(--text);
+}
+.kv-numbers dd {
+  font-variant-numeric: tabular-nums;
+}
+.two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+@media (max-width: 520px) {
+  .two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.rank-list {
+  margin: 0;
+  padding-left: 1.3rem;
+  display: grid;
+  gap: 4px;
+}
+.rank-list li {
+  min-width: 0;
+}
+.rank-list li .location-link {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+.rank-list li > span {
+  display: block;
+}
+.plain-list,
+.typosquats {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 3px;
+}
+.severity-key {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.severity-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Folder tree */
+.folder-tree-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.folder-tree {
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+}
+.tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tree-row:hover {
+  background: var(--surface-2);
+}
+.tree-caret {
+  width: 12px;
+  flex: none;
+  color: var(--muted);
+}
+.tree-sev {
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+.tree-sev-none {
+  display: inline-block;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: transparent;
+}
+.tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+.tree-file .tree-name {
+  color: var(--accent-ink);
+}
+.tree-counts {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 10px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.tree-findings {
+  font-weight: 600;
+}
+.tree-omitted {
+  padding: 4px 0;
+}

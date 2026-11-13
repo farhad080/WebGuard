@@ -59,7 +59,7 @@ export function clampRange(range: LineRange, lineCount: number): LineRange | nul
  * 'other' for lines of the file's other findings (marked). Active wins where they overlap.
  */
 export function lineRoles(
-  active: LineRange,
+  active: Partial<LineRange>,
   others: readonly LineRange[],
   lineCount: number,
 ): Map<number, 'active' | 'other'> {
@@ -68,7 +68,13 @@ export function lineRoles(
     const r = clampRange(o, lineCount);
     if (r) for (let l = r.lineStart; l <= r.lineEnd; l++) roles.set(l, 'other');
   }
-  const a = clampRange(active, lineCount);
+  const a =
+    active.lineStart === undefined
+      ? null
+      : clampRange(
+          { lineStart: active.lineStart, lineEnd: active.lineEnd ?? active.lineStart },
+          lineCount,
+        );
   if (a) for (let l = a.lineStart; l <= a.lineEnd; l++) roles.set(l, 'active');
   return roles;
 }

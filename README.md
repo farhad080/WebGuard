@@ -714,6 +714,52 @@ view.
   - `not_ready`: the scan is still queued or running.
   - `not_found`: no such file in the scan.
 
+## Project statistics
+
+Every scan computes a **Project Overview** once, while it runs, and stores it in
+`scans.stats_json`. The worker never re-reads files for it. The profiler's single pass over the
+extracted tree (one full read per text file within `ANALYSIS_MAX_FILE_BYTES`, in place of
+the 8 KB head it otherwise reads) yields per-file sizes and line counts. The rest is combined in
+the transaction that persists the findings: the extraction result, the dependency set the A11
+detector checks, the persisted findings, and the same rollup the dashboard and reports use.
+The overview's grade and counts therefore always match the dashboard's.
+
+`GET /api/scans/:id/stats` returns `{ scanId, status, stats, error }`. It requires
+`Authorization: Bearer`, and another user's scan answers `404`. It returns the stored object
+and never recomputes it. `stats` is `null` while the scan is queued or running, and for scans
+that predate the feature.
+
+**Failed scans keep partial statistics.** `stats.status` is `partial`, and `stats.stage`
+names the last stage that finished:
+
+- `upload`: only the ZIP size, because extraction failed.
+- `extraction`: file counts, unpacked size and skipped files.
+- `analysis`: everything except the security and dependency summaries.
+
+`error` gives the failure reason. Sections that were not reached are `null`.
+
+Computed statistics:
+
+| Group                | Statistics                                                                                                                                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Size                 | Extracted files and folders. Lines of code split into code / comment / blank, overall and per language. ZIP and unpacked size. The 5 largest files (bytes) and 5 longest files (lines).                                                                                            |
+| Languages & stack    | Files, bytes and lines per language. Detected frameworks. Likely entry points (`package.json` `main` and `start`/`dev`/`serve` scripts, then conventions such as `server.js` or `src/index.ts`). Package managers (from lockfiles, or "no lockfile"). Analysis depth per language. |
+| File structure       | Folder tree with file and finding counts and the worst severity of each subtree. Counts are exact. The stored tree is capped breadth-first at 1,500 nodes, depth 8 and 200 children per folder; what is left out is summarized per folder.                                         |
+| Dependencies         | Direct vs transitive package names. Vulnerable and end-of-life/outdated packages. Suspected typosquats with the package they imitate. All of these come from A11's own input and findings.                                                                                         |
+| Security at a glance | Findings by severity and by OWASP category. The 5 files with the most findings. The rollup's risk score (0–100) and grade (A–F).                                                                                                                                                   |
+| Skipped files        | Files in ignored folders (with the folder names), binary files, files over the size limit, text files in an unrecognized format, and symlinks/special archive entries.                                                                                                             |
+| Scan info            | Start and finish times, duration, files parsed / parse errors, and every detector rule that ran.                                                                                                                                                                                   |
+
+**Honest depth.** Only JavaScript and TypeScript are parsed into an AST and get data-flow
+(taint) analysis; they are labelled **full AST analysis**. Every other language is labelled
+**secrets/crypto/deps/config only**, so a clean result for, say, a Python project reads as the
+shallower guarantee it is.
+
+Lines of code are a line-based heuristic, like cloc's. A line holding only a comment, or lying
+inside a block comment, counts as comment. Code with a trailing comment counts as code. A block
+comment opens a multi-line span only at the start of a line, so a glob like `'**/*.js'` in a
+string never swallows the lines after it.
+
 ## Frontend
 
 `apps/web` is a React + TypeScript SPA built with Vite, React Router, and TanStack Query.
@@ -766,6 +812,25 @@ log, because no mail transport is configured.
   monotone lightness and contrast against the surface. The OWASP chart is one series in one
   blue. Every chart has an HTML legend and a **Table** toggle, so no value is only reachable
   through a tooltip.
+- **Project Overview tab.** The scan page has two tabs, **Dashboard & findings** and
+  **Project overview**. The selected tab is kept in `?tab=overview`. The overview loads
+  `GET /api/scans/:id/stats` (see [Project statistics](#project-statistics)) and shows:
+  - stat tiles: files, folders, lines of code, unpacked/ZIP size, dependencies, risk grade
+  - a languages chart by lines or files, with a Table view
+  - the code/comment/blank split and the analysis depth of each language
+  - the stack: frameworks, entry point, package manager
+  - the largest and longest files
+  - a collapsible folder tree. Each folder shows its file and finding counts and is marked
+    with the worst severity inside it (swatch plus text, never color alone)
+  - dependency and security-at-a-glance panels, including counts of files that weren't
+    analyzed
+  - scan info, with the list of rules that ran
+
+  Any file in the tree or the file lists opens the same file viewer as the findings table,
+  focused on the file's most severe finding and marking the others. A failed scan shows its
+  partial statistics under the error. Scans without statistics, and scans still running, get
+  an explanation instead of empty cards.
+
 - **Clickable locations / file viewer.** Every Location cell in the findings table
   (`server.js:13–15`) is a keyboard-focusable button (`aria-label` "Open server.js at line 13").
   It opens a full-file viewer dialog: the file from this scan's extracted copy in Monaco,
@@ -838,14 +903,14 @@ users 1──* projects 1──* scans 1──* findings
                               └──* artifacts
 ```
 
-| Table                   | Purpose                                                          | Key columns                                                                                                                                            |
-| ----------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `users`                 | Account owners                                                   | `email` (unique), `password_hash`                                                                                                                      |
-| `projects`              | A website codebase owned by a user                               | `user_id → users`, `name`                                                                                                                              |
-| `scans`                 | One analysis run of a project                                    | `project_id → projects`, `status` (`queued`/`running`/`completed`/`failed`), `started_at`, `finished_at`, `summary_json`                               |
-| `findings`              | A detected vulnerability at a file/line                          | `scan_id → scans`, `detector_id`, `owasp_category`, `severity`, `confidence` (0–1), `file_path`, `line_start`, `line_end`, `snippet`, `fix_suggestion` |
-| `artifacts`             | Files produced for a scan (uploaded ZIP, extracted tree, report) | `scan_id → scans`, `kind` (`raw_zip`/`extracted`/`report`), `storage_key`                                                                              |
-| `password_reset_tokens` | Single-use password reset links                                  | `user_id → users`, `token_hash` (unique, SHA-256), `expires_at`, `used_at`                                                                             |
+| Table                   | Purpose                                                          | Key columns                                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`                 | Account owners                                                   | `email` (unique), `password_hash`                                                                                                                         |
+| `projects`              | A website codebase owned by a user                               | `user_id → users`, `name`                                                                                                                                 |
+| `scans`                 | One analysis run of a project                                    | `project_id → projects`, `status` (`queued`/`running`/`completed`/`failed`), `started_at`, `finished_at`, `summary_json`, `stats_json` (Project Overview) |
+| `findings`              | A detected vulnerability at a file/line                          | `scan_id → scans`, `detector_id`, `owasp_category`, `severity`, `confidence` (0–1), `file_path`, `line_start`, `line_end`, `snippet`, `fix_suggestion`    |
+| `artifacts`             | Files produced for a scan (uploaded ZIP, extracted tree, report) | `scan_id → scans`, `kind` (`raw_zip`/`extracted`/`report`), `storage_key`                                                                                 |
+| `password_reset_tokens` | Single-use password reset links                                  | `user_id → users`, `token_hash` (unique, SHA-256), `expires_at`, `used_at`                                                                                |
 
 All foreign keys cascade on delete (deleting a project removes its scans, findings, and
 artifacts) and are indexed; `findings` also has a composite index on `(scan_id, severity)`.
@@ -854,19 +919,20 @@ artifacts) and are indexed; `findings` also has a composite index on `(scan_id, 
 
 All routes require `Authorization: Bearer <token>`. Resources owned by another user return `404`.
 
-| Method | Path                      | Notes                                                                                                                                                      |
-| ------ | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/projects`           | `{ name }` → `201` project                                                                                                                                 |
-| GET    | `/api/projects`           | Current user's projects, newest first, each with `lastScan` (status, rollup)                                                                               |
-| GET    | `/api/projects/:id`       | One project                                                                                                                                                |
-| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                                                                                               |
-| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                                                                                                |
-| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                                                                                                    |
-| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                                                                                                          |
-| GET    | `/api/scans/:id`          | One scan with status and summary                                                                                                                           |
-| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                                                                             |
-| GET    | `/api/scans/:id/compare`  | `?against=<scanId>` → `{ scan, against, fixed, new, persisting, summary }`; both scans must be completed and in the same project (`409` / `400` otherwise) |
-| GET    | `/api/scans/:id/file`     | `?path=` → one extracted file as JSON (secret lines redacted, path-confined, `MAX_VIEW_FILE_KB` cap); see [Source file endpoint](#source-file-endpoint)    |
+| Method | Path                      | Notes                                                                                                                                                           |
+| ------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/projects`           | `{ name }` → `201` project                                                                                                                                      |
+| GET    | `/api/projects`           | Current user's projects, newest first, each with `lastScan` (status, rollup)                                                                                    |
+| GET    | `/api/projects/:id`       | One project                                                                                                                                                     |
+| PATCH  | `/api/projects/:id`       | `{ name }` → renamed project                                                                                                                                    |
+| DELETE | `/api/projects/:id`       | `204`; cascades to scans/findings/artifacts                                                                                                                     |
+| POST   | `/api/projects/:id/scans` | Multipart ZIP upload (field `file`) → `201` queued scan                                                                                                         |
+| GET    | `/api/projects/:id/scans` | Scans for a project, newest first                                                                                                                               |
+| GET    | `/api/scans/:id`          | One scan with status and summary                                                                                                                                |
+| GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                                                                                  |
+| GET    | `/api/scans/:id/compare`  | `?against=<scanId>` → `{ scan, against, fixed, new, persisting, summary }`; both scans must be completed and in the same project (`409` / `400` otherwise)      |
+| GET    | `/api/scans/:id/stats`    | Project Overview statistics stored with the scan (`{ scanId, status, stats, error }`; partial for a failed scan); see [Project statistics](#project-statistics) |
+| GET    | `/api/scans/:id/file`     | `?path=` → one extracted file as JSON (secret lines redacted, path-confined, `MAX_VIEW_FILE_KB` cap); see [Source file endpoint](#source-file-endpoint)         |
 
 `DELETE /api/projects/:id` also removes the project's stored files. `POST /api/auth/*` and
 uploads are rate-limited and answer `429` when over the limit (see

@@ -1,8 +1,10 @@
 import {
+  collectDependencies,
   createDefaultDetectorRegistry,
   createDependencyDetector,
   createDetectionContext,
   dedupeFindings,
+  dependencyCountsOf,
   DetectionEngine,
   DetectorRegistry,
   OsvAdvisorySource,
@@ -10,8 +12,10 @@ import {
   ProfilerService,
   RemediationService,
   SnapshotAdvisorySource,
+  type DependencyCounts,
   type EnrichedFinding,
   type ParsedFile,
+  type ProjectInventory,
 } from '@webguard/analysis';
 import type { DetectorErrorInfo, ParseErrorSample, ProjectProfile } from '@webguard/core';
 
@@ -115,6 +119,10 @@ export function installNetworkGuard(hosts: readonly string[]): void {
 
 export interface AnalysisOutput {
   profile: ProjectProfile;
+  /** Per-file facts from the same profiling pass (Project Overview statistics). */
+  inventory: ProjectInventory;
+  /** Direct/transitive dependency names (the same set A11 checks). */
+  dependencies: DependencyCounts;
   filesParsed: number;
   parseErrors: number;
   parseErrorSamples: ParseErrorSample[];
@@ -140,7 +148,11 @@ export async function analyzeProject(
 ): Promise<AnalysisOutput> {
   // Analysis inputs: profile the project, then parse every supported source file.
   // A file that fails to parse is recorded and skipped; it never fails the scan.
-  const profile = await new ProfilerService({ maxFileBytes, ignoredDirs }).profile(extractDir);
+  // One pass: the profile plus per-file sizes / line counts for the Project Overview.
+  const { profile, inventory } = await new ProfilerService({
+    maxFileBytes,
+    ignoredDirs,
+  }).profileWithInventory(extractDir);
   checkBudget(budget);
   const files: ParsedFile[] = [];
   let parseErrors = 0;
@@ -163,6 +175,7 @@ export async function analyzeProject(
   const engine = new DetectionEngine(detectors, { checkpoint: () => checkBudget(budget) });
   const detection = await engine.run(ctx);
   checkBudget(budget);
+  const dependencies = dependencyCountsOf(collectDependencies(ctx));
 
   // Remediation: why/impact, steps, a (contextualized) secure example and references.
   const findings = await remediation.enrichFindings(dedupeFindings(detection.findings), ctx);
@@ -170,6 +183,8 @@ export async function analyzeProject(
 
   return {
     profile,
+    inventory,
+    dependencies,
     filesParsed: files.filter((f) => f.ast).length,
     parseErrors,
     parseErrorSamples,
