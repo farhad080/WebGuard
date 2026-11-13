@@ -1,9 +1,13 @@
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Finding, Project, Scan } from '@webguard/core';
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createUserWithToken, resetDatabase } from '../../test/helpers.js';
 import { createApp } from '../app.js';
+import { config } from '../config.js';
 import { prisma } from '../db.js';
 import { closeScanQueue, getScanQueue } from '../scans/queue.js';
 import { getStorage, storageKeys } from '../scans/storage.js';
@@ -288,17 +292,36 @@ describe('GET /api/projects lastScan', () => {
   });
 });
 
-describe('GET /api/scans/:id/source', () => {
-  async function seedSource() {
+describe('GET /api/scans/:id/file', () => {
+  const savedMaxView = process.env.MAX_VIEW_FILE_KB;
+  afterEach(() => {
+    if (savedMaxView === undefined) delete process.env.MAX_VIEW_FILE_KB;
+    else process.env.MAX_VIEW_FILE_KB = savedMaxView;
+  });
+
+  const CONFIG_JS = "const a = 1;\nconst key = 'sk_live_abcdef1234567890';\nmodule.exports = a;\n";
+
+  /** A completed scan of alice's with an extracted copy in storage. */
+  async function seedScan() {
     const project = await createProject(alice);
     const scan = await createScan(alice, project.id);
     const storage = getStorage();
     const base = storageKeys.extracted(scan.id);
-    await storage.put(
-      `${base}/src/config.js`,
-      Buffer.from("const a = 1;\nconst key = 'sk_live_abcdef1234567890';\nmodule.exports = a;\n"),
-    );
+    await storage.put(`${base}/src/config.js`, Buffer.from(CONFIG_JS));
+    await storage.put(`${base}/server.js`, Buffer.from('const x = 1;\n'.repeat(400)));
     await storage.put(`${base}/bin/blob.dat`, Buffer.from([1, 0, 2]));
+    await storage.put(`${base}/logo.png`, Buffer.from('not really a png'));
+    await prisma.artifact.create({
+      data: { scanId: scan.id, kind: 'extracted', storageKey: base },
+    });
+    await prisma.scan.update({
+      where: { id: scan.id },
+      data: {
+        status: 'completed',
+        finishedAt: new Date(),
+        summaryJson: { skippedDirs: ['node_modules', 'web/dist'] },
+      },
+    });
     await prisma.finding.create({
       data: {
         scanId: scan.id,
@@ -317,35 +340,143 @@ describe('GET /api/scans/:id/source', () => {
     return scan;
   }
 
-  const get = (scanId: string, path: string, auth = alice) =>
-    request(app).get(`/api/scans/${scanId}/source`).query({ path }).set('Authorization', auth);
+  const get = (scanId: string, filePath: string | undefined, auth = alice) => {
+    const req = request(app).get(`/api/scans/${scanId}/file`).set('Authorization', auth);
+    return filePath === undefined ? req : req.query({ path: filePath });
+  };
 
-  it('returns the file text with secret lines redacted', async () => {
-    const scan = await seedSource();
+  it('returns the file with metadata, secret lines redacted', async () => {
+    const scan = await seedScan();
     const res = await get(scan.id, 'src/config.js');
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toMatch(/^text\/plain/);
-    expect(res.text).toBe("const a = 1;\nconst key = 'sk_l…[redacted]';\nmodule.exports = a;\n");
-    expect(res.text).not.toContain('abcdef1234567890');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    expect(res.body).toEqual({
+      path: 'src/config.js',
+      language: 'javascript',
+      size: Buffer.byteLength(CONFIG_JS),
+      lineCount: 3,
+      content: "const a = 1;\nconst key = 'sk_l…[redacted]';\nmodule.exports = a;\n",
+      truncated: false,
+      binary: false,
+      maxBytes: 2048 * 1024,
+    });
+    expect(JSON.stringify(res.body)).not.toContain('abcdef1234567890');
   });
 
-  it('rejects traversal and malformed paths with 400', async () => {
-    const scan = await seedSource();
-    for (const p of ['', '../x', 'src/../../x', '/etc/passwd', 'src\\config.js', 'src//a', './a']) {
-      expect((await get(scan.id, p)).status, p).toBe(400);
+  it('rejects traversal, absolute, and malformed paths with 400', async () => {
+    const scan = await seedScan();
+    const other = await seedScan();
+    const bad = [
+      undefined,
+      '',
+      '../x',
+      'src/../../x',
+      `../../${other.id}/extracted/src/config.js`,
+      '../raw.zip',
+      '/etc/passwd',
+      'C:/Windows/win.ini',
+      'C:\\Windows\\win.ini',
+      'src\\config.js',
+      'src//a',
+      './a',
+      'src/.',
+      'a\u0000b',
+      'a:b',
+      'con',
+      'x'.repeat(1025),
+    ];
+    for (const p of bad) {
+      const res = await get(scan.id, p);
+      expect(res.status, String(p)).toBe(400);
+      expect(res.body.error, String(p)).toEqual(expect.any(String));
+      expect(res.body).not.toHaveProperty('content');
     }
   });
 
-  it('returns 404 for missing files and directories, 415 for binary', async () => {
-    const scan = await seedSource();
-    expect((await get(scan.id, 'nope.js')).status).toBe(404);
-    expect((await get(scan.id, 'src')).status).toBe(404);
-    expect((await get(scan.id, 'bin/blob.dat')).status).toBe(415);
+  it('never follows a symlink out of the extracted directory', async () => {
+    const scan = await seedScan();
+    const extracted = path.join(config.storageDir, 'scans', scan.id, 'extracted');
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'webguard-outside-'));
+    await writeFile(path.join(outside, 'secret.txt'), 'TOP SECRET');
+    // A directory junction needs no privilege on Windows; a file symlink may (EPERM: skip it).
+    await symlink(outside, path.join(extracted, 'linkdir'), 'junction');
+    const paths = ['linkdir/secret.txt'];
+    try {
+      await symlink(path.join(outside, 'secret.txt'), path.join(extracted, 'link.txt'), 'file');
+      paths.push('link.txt');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EPERM') throw err;
+    }
+    try {
+      for (const p of paths) {
+        const res = await get(scan.id, p);
+        expect([400, 404], p).toContain(res.status);
+        expect(JSON.stringify(res.body), p).not.toContain('TOP SECRET');
+      }
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
-  it("returns 404 for another user's scan", async () => {
-    const scan = await seedSource();
-    expect((await get(scan.id, 'src/config.js', bob)).status).toBe(404);
+  it('truncates a file larger than MAX_VIEW_FILE_KB to whole lines', async () => {
+    const scan = await seedScan();
+    process.env.MAX_VIEW_FILE_KB = '1';
+    const res = await get(scan.id, 'server.js');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ truncated: true, size: 13 * 400, maxBytes: 1024 });
+    expect(res.body.content.length).toBeLessThanOrEqual(1024);
+    expect(res.body.content.endsWith('const x = 1;\n')).toBe(true);
+    expect(res.body.lineCount).toBe(Math.floor(1024 / 13));
+  });
+
+  it('flags binary files instead of returning bytes', async () => {
+    const scan = await seedScan();
+    for (const p of ['bin/blob.dat', 'logo.png']) {
+      const res = await get(scan.id, p);
+      expect(res.status, p).toBe(200);
+      expect(res.body, p).toMatchObject({ binary: true, content: '', lineCount: 0 });
+    }
+  });
+
+  it('explains why a file is missing', async () => {
+    const scan = await seedScan();
+    let res = await get(scan.id, 'node_modules/express/index.js');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reason: 'ignored_dir', ignoredDir: 'node_modules' });
+    expect(res.body.error).toMatch(/ignored dependency\/build directory/);
+
+    // Recorded in the scan's own skippedDirs, even when not in the current ignore list.
+    res = await get(scan.id, 'web/dist/app.js');
+    expect(res.body).toMatchObject({ reason: 'ignored_dir', ignoredDir: 'web/dist' });
+
+    res = await get(scan.id, 'nope.js');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reason: 'not_found' });
+    res = await get(scan.id, 'src');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reason: 'not_found' });
+
+    await getStorage().deletePrefix(storageKeys.extracted(scan.id));
+    res = await get(scan.id, 'src/config.js');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reason: 'extracted_unavailable' });
+    expect(res.body.error).toMatch(/no longer available/);
+  });
+
+  it('reports a scan that has not been extracted yet', async () => {
+    const project = await createProject(alice);
+    const scan = await createScan(alice, project.id);
+    const res = await get(scan.id, 'src/config.js');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reason: 'not_ready' });
+  });
+
+  it("returns 404 for another user's scan, and 401 without a token", async () => {
+    const scan = await seedScan();
+    const res = await get(scan.id, 'src/config.js', bob);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found' });
+    expect((await request(app).get(`/api/scans/${scan.id}/file?path=server.js`)).status).toBe(401);
   });
 });
 

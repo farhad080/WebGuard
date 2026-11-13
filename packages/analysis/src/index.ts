@@ -5,7 +5,7 @@ export {
   type ProfilerOptions,
 } from './profiler/profiler.js';
 export { ignoredDirOf } from './profiler/ignored-dirs.js';
-export { detectLanguage, CODE_LANGUAGES } from './profiler/languages.js';
+export { BINARY_EXTENSIONS, detectLanguage, CODE_LANGUAGES } from './profiler/languages.js';
 
 // Common AST contract
 export type {

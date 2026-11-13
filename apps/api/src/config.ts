@@ -147,6 +147,15 @@ export const config = {
     return process.env.REPORT_PDF_ON_COMPLETE !== 'false';
   },
 
+  /**
+   * Largest file the file viewer (GET /api/scans/:id/file) returns in full, in KB
+   * (MAX_VIEW_FILE_KB, default 2048). A larger file comes back as its first MAX_VIEW_FILE_KB
+   * with `truncated: true`.
+   */
+  get maxViewFileBytes(): number {
+    return Math.floor(positiveNumber('MAX_VIEW_FILE_KB', 2048) * 1024);
+  },
+
   /** Source files larger than this are profiled but not parsed (minified/generated code). */
   get analysisMaxFileBytes(): number {
     return positiveNumber('ANALYSIS_MAX_FILE_BYTES', 1 * MiB);

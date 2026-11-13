@@ -345,3 +345,38 @@ export interface Artifact {
   storageKey: string;
   createdAt: IsoDateString;
 }
+
+// ---------------------------------------------------------------------------
+// File viewer (GET /api/scans/:id/file)
+// ---------------------------------------------------------------------------
+
+/** One file of a scan's extracted copy, as returned by GET /api/scans/:id/file. */
+export interface ScanFile {
+  /** The requested `/`-separated path, relative to the project root. */
+  path: string;
+  /** Detected from the extension (or shebang); null when unknown. */
+  language: Language | null;
+  /** Full size of the file on disk, in bytes. */
+  size: number;
+  /** Lines in `content` (0 for a binary file). */
+  lineCount: number;
+  /** UTF-8 text with secret lines redacted; '' for a binary file. */
+  content: string;
+  /** True when the file exceeds MAX_VIEW_FILE_KB and `content` is only its head. */
+  truncated: boolean;
+  /** True when the file is not text; `content` is then empty. */
+  binary: boolean;
+  /** Bytes returned at most (MAX_VIEW_FILE_KB). */
+  maxBytes: number;
+}
+
+/** Why GET /api/scans/:id/file answered 404 (in the `reason` field of the error body). */
+export type ScanFileMissingReason =
+  /** The path lies in a dependency/build/VCS directory that extraction skips. */
+  | 'ignored_dir'
+  /** The scan's extracted copy no longer exists (deleted, or the scan failed). */
+  | 'extracted_unavailable'
+  /** The scan has not been extracted yet (still queued or running). */
+  | 'not_ready'
+  /** No such file in the extracted copy. */
+  | 'not_found';

@@ -119,3 +119,19 @@ export function languageForPath(path: string): string {
   if (/(^|\/)dockerfile$/i.test(path)) return 'dockerfile';
   return map[ext] ?? 'plaintext';
 }
+
+/** One-line title of a finding: its remediation title, else the explanation's first sentence. */
+export function findingTitle(f: Pick<Finding, 'remediation' | 'explanation'>): string {
+  return f.remediation?.title ?? f.explanation.split('. ')[0] ?? f.explanation;
+}
+
+/** `file:13` or `file:13–15`. */
+export function formatLocation(f: Pick<Finding, 'filePath' | 'lineStart' | 'lineEnd'>): string {
+  return `${f.filePath}:${f.lineStart}${f.lineEnd > f.lineStart ? `–${f.lineEnd}` : ''}`;
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round((bytes / 1024) * 10) / 10} KB`;
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}

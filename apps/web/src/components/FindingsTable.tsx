@@ -1,6 +1,9 @@
 import type { Finding, OwaspCategory, Severity } from '@webguard/core';
+import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
+  findingTitle,
+  formatLocation,
   OWASP_CATEGORIES,
   SEVERITIES,
   SEVERITY_LABEL,
@@ -10,6 +13,7 @@ import {
   splitOwasp,
 } from '../lib/findings';
 import { ConfidenceBadge, OwaspBadge, ReviewBadges, SeverityBadge } from './Badges';
+import { FileViewer } from './code/FileViewer';
 import { EmptyState } from './States';
 
 type SortKey = 'severity' | 'confidence' | 'file';
@@ -68,6 +72,25 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
   const [params, setParams] = useSearchParams();
   const filters = readFilters(params);
   const rows = applyFilters(findings, filters);
+
+  // The file viewer is URL state (?view=<findingId>): Back closes it, and it can be linked.
+  const viewing = params.get('view');
+  const viewed = viewing ? findings.find((f) => f.id === viewing) : undefined;
+  const viewedFile = viewed?.filePath;
+  const fileFindings = useMemo(
+    () => (viewedFile ? findings.filter((f) => f.filePath === viewedFile) : []),
+    [findings, viewedFile],
+  );
+  const openViewer = (id: string, replace = false) => {
+    const next = new URLSearchParams(params);
+    next.set('view', id);
+    setParams(next, { replace });
+  };
+  const closeViewer = () => {
+    const next = new URLSearchParams(params);
+    next.delete('view');
+    setParams(next, { replace: true });
+  };
 
   const update = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -211,12 +234,20 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
                     <OwaspBadge category={f.owaspCategory} />
                   </td>
                   <td className="mono location">
-                    {f.filePath}:{f.lineStart}
-                    {f.lineEnd > f.lineStart ? `–${f.lineEnd}` : ''}
+                    <button
+                      type="button"
+                      className="location-link"
+                      title={`Open ${formatLocation(f)}`}
+                      aria-label={`Open ${f.filePath} at line ${f.lineStart}`}
+                      aria-haspopup="dialog"
+                      onClick={() => openViewer(f.id)}
+                    >
+                      {formatLocation(f)}
+                    </button>
                   </td>
                   <td>
                     <Link to={`/findings/${f.id}`} className="finding-link">
-                      {f.remediation?.title ?? f.explanation.split('. ')[0]}
+                      {findingTitle(f)}
                     </Link>{' '}
                     <ReviewBadges finding={f} />
                   </td>
@@ -225,6 +256,15 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {viewed && (
+        <FileViewer
+          finding={viewed}
+          fileFindings={fileFindings}
+          onSelect={(id) => openViewer(id, true)}
+          onClose={closeViewer}
+        />
       )}
     </section>
   );

@@ -5,6 +5,7 @@ import type {
   ProjectWithLastScan,
   Scan,
   ScanComparison,
+  ScanFile,
   Severity,
 } from '@webguard/core';
 import { ApiError, apiFetch, apiJson } from './client';
@@ -62,8 +63,9 @@ export const api = {
   getFinding: (id: string) => apiJson<Finding>(`/api/findings/${enc(id)}`),
   compareScans: (scanId: string, againstId: string) =>
     apiJson<ScanComparison>(`/api/scans/${enc(scanId)}/compare?against=${enc(againstId)}`),
-  getSource: (scanId: string, path: string) =>
-    apiJson<string>(`/api/scans/${enc(scanId)}/source?path=${enc(path)}`),
+  /** One file of the scan's extracted copy (secret-redacted, size-capped). */
+  getFile: (scanId: string, path: string) =>
+    apiJson<ScanFile>(`/api/scans/${enc(scanId)}/file?path=${enc(path)}`),
 
   // reports
   reportHtml: (scanId: string) => apiJson<string>(`/api/scans/${enc(scanId)}/report.html`),

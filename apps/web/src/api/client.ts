@@ -11,6 +11,8 @@ export class ApiError extends Error {
     readonly status: number,
     message: string,
     readonly details?: unknown,
+    /** The parsed JSON error body, for endpoints that explain errors with extra fields. */
+    readonly body?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -44,14 +46,18 @@ export function authHeaders(): Record<string, string> {
 async function errorFrom(res: Response): Promise<ApiError> {
   let message = `Request failed (${res.status})`;
   let details: unknown;
+  let body: Record<string, unknown> | undefined;
   try {
-    const body = (await res.json()) as { error?: string; details?: unknown };
-    if (body?.error) message = body.error;
-    details = body?.details;
+    const parsed = (await res.json()) as { error?: string; details?: unknown } | null;
+    if (parsed && typeof parsed === 'object') {
+      body = parsed as Record<string, unknown>;
+      if (typeof parsed.error === 'string') message = parsed.error;
+      details = parsed.details;
+    }
   } catch {
     // Non-JSON error body; keep the generic message.
   }
-  return new ApiError(res.status, message, details);
+  return new ApiError(res.status, message, details, body);
 }
 
 /** Shared 401 handling: a rejected token ends the session (except on the login call itself). */

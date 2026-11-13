@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadEnv } from 'dotenv';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 loadEnv({ path: fileURLToPath(new URL('../../.env', import.meta.url)), quiet: true });
 
@@ -37,6 +37,8 @@ export default defineConfig({
       OFFLINE: 'true',
     },
     globalSetup: ['./test/global-setup.ts'],
+    // The dev StorageService root holds extracted uploads: never collect (= run) their tests.
+    exclude: [...configDefaults.exclude, 'storage/**'],
     // Tests share one database and one queue; run files sequentially.
     fileParallelism: false,
     testTimeout: 30_000,

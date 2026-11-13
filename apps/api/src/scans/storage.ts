@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream } from 'node:fs';
-import { access, copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
+import { access, copyFile, lstat, mkdir, open, readdir, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -16,6 +16,12 @@ export interface StorageService {
   getStream(key: string): Promise<Readable>;
   downloadToFile(key: string, localPath: string): Promise<void>;
   exists(key: string): Promise<boolean>;
+  /**
+   * Reads at most `maxBytes` from the start of one regular file, plus its full size. Returns
+   * null when the key is missing or is not a regular file. Symlinks (of the object itself or
+   * any directory on its path) are refused: the object must resolve inside the storage root.
+   */
+  readHead(key: string, maxBytes: number): Promise<{ size: number; data: Buffer } | null>;
   /** Lists all keys under a prefix (recursively). */
   list(prefix: string): Promise<string[]>;
   /** Deletes one object (no-op if it is missing). */
@@ -92,6 +98,44 @@ export class LocalStorageService implements StorageService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async readHead(key: string, maxBytes: number): Promise<{ size: number; data: Buffer } | null> {
+    const target = this.resolveKey(key);
+    let real: string;
+    let realRoot: string;
+    try {
+      // lstat: a symlink at the key itself is never followed.
+      const st = await lstat(target);
+      if (!st.isFile()) return null;
+      // realpath: a symlinked directory anywhere on the path must not lead outside the root.
+      [real, realRoot] = await Promise.all([realpath(target), realpath(this.root)]);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      throw err;
+    }
+    const rel = path.relative(realRoot, real);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new InvalidStorageKeyError(`Storage key resolves outside the root: ${key}`);
+    }
+    // O_NOFOLLOW (where the platform has it) closes the lstat → open race for the last segment.
+    const handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const st = await handle.stat();
+      if (!st.isFile()) return null;
+      const length = Math.min(st.size, Math.max(0, maxBytes));
+      const data = Buffer.alloc(length);
+      let read = 0;
+      while (read < length) {
+        const { bytesRead } = await handle.read(data, read, length - read, read);
+        if (bytesRead === 0) break;
+        read += bytesRead;
+      }
+      return { size: st.size, data: data.subarray(0, read) };
+    } finally {
+      await handle.close();
     }
   }
 

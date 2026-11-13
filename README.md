@@ -671,6 +671,49 @@ worker is still busy. Rendering uses the **preinstalled** Chromium/Chrome via
 `--headless --no-sandbox --print-to-pdf`, located by `CHROMIUM_PATH` or common install paths;
 no browser is downloaded at runtime.
 
+### Source file endpoint
+
+`GET /api/scans/:id/file?path=<relative path>` returns one file from the scan's extracted
+copy as JSON. It is the single source for the findings file viewer and the finding detail code
+view.
+
+```json
+{
+  "path": "server.js",
+  "language": "javascript",
+  "size": 1834,
+  "lineCount": 61,
+  "content": "…",
+  "truncated": false,
+  "binary": false,
+  "maxBytes": 2097152
+}
+```
+
+- **Ownership.** Requires `Authorization: Bearer`. Another user's scan answers `404`, exactly
+  like the other scan routes.
+- **Path confinement.** `path` must be a clean, `/`-separated path relative to the project
+  root. The same rules as the extractor's zip-slip guard apply: no absolute or drive paths,
+  no `..`, `.` or empty segments, no backslashes, control characters, `:`, or reserved device
+  names. A violation answers `400`. The path is only ever joined onto this scan's own
+  `scans/<id>/extracted` prefix, which the storage layer validates again. The file must be a
+  regular file whose real path, with symlinks resolved, is still inside the storage root. A
+  symlink is never followed, at the path itself or in any directory on it.
+- **Size limit.** At most `MAX_VIEW_FILE_KB` (default 2048) is read. For a larger file the
+  response has the full `size`, `truncated: true`, and a `content` cut at the last whole line
+  within the limit, never the whole file.
+- **Text only.** Files with a known binary extension, NUL bytes, or mostly control characters
+  return `binary: true` and an empty `content`. `language` is detected from the extension (or
+  shebang) and is `null` when unknown.
+- **Redaction.** Lines the secrets detector flagged are replaced with their redacted snippet.
+- **Missing files.** `404` with `{ error, reason }`, where `reason` is one of:
+  - `ignored_dir` (plus `ignoredDir`): the file is in a dependency/build/VCS directory
+    (`EXTRACT_IGNORE_DIRS`, or one the scan recorded as skipped), so it was never extracted.
+  - `extracted_unavailable`: the scan's extracted copy is gone. Completed scans keep it until
+    the project is deleted. A failed scan never keeps one.
+  - `not_ready`: the scan is still queued or running.
+  - `not_found`: no such file in the scan.
+
 ## Frontend
 
 `apps/web` is a React + TypeScript SPA built with Vite, React Router, and TanStack Query.
@@ -723,9 +766,22 @@ log, because no mail transport is configured.
   monotone lightness and contrast against the surface. The OWASP chart is one series in one
   blue. Every chart has an HTML legend and a **Table** toggle, so no value is only reachable
   through a tooltip.
-- **Code view.** `GET /api/scans/:id/source?path=` serves the extracted file. Lines flagged
-  by the secrets detector are replaced with their redacted snippet, so the code view never
-  re-exposes a secret.
+- **Clickable locations / file viewer.** Every Location cell in the findings table
+  (`server.js:13–15`) is a keyboard-focusable button (`aria-label` "Open server.js at line 13").
+  It opens a full-file viewer dialog: the file from this scan's extracted copy in Monaco,
+  with line numbers and syntax highlighting, scrolled to and highlighting the finding's
+  lines. Every other finding in the same file gets a gutter marker and is listed in a side
+  panel; picking one moves the highlight to it. The header shows the path, language, size and
+  the finding's summary, with a link to the finding's detail page. Escape, the Close button,
+  a click outside, or browser Back closes it (the open viewer is the `?view=<findingId>` URL
+  parameter), and focus returns to the location. The viewer explains every case where it
+  can't show code: a file in an ignored dependency/build directory ("this file wasn't
+  scanned"), a scan whose extracted copy is gone, a file truncated at `MAX_VIEW_FILE_KB`
+  (including when the flagged lines are past the cut), and a binary file.
+- **Code view.** The finding detail page shows the same file, from the same
+  `GET /api/scans/:id/file` fetch (one cached query per scan and path), in the same Monaco
+  component. Lines flagged by the secrets detector are replaced with their redacted snippet,
+  so neither view ever re-exposes a secret.
 - **Reports.** Downloads use `fetch` with the Bearer token and are saved from a Blob. The HTML
   report is shown in `<iframe sandbox>` with no scripts and an opaque origin, so its embedded
   code can never run as the app.
@@ -810,7 +866,7 @@ All routes require `Authorization: Bearer <token>`. Resources owned by another u
 | GET    | `/api/scans/:id`          | One scan with status and summary                                                                                                                           |
 | GET    | `/api/scans/:id/findings` | Filters: `severity` (one or comma-separated), `owaspCategory`, `minConfidence`                                                                             |
 | GET    | `/api/scans/:id/compare`  | `?against=<scanId>` → `{ scan, against, fixed, new, persisting, summary }`; both scans must be completed and in the same project (`409` / `400` otherwise) |
-| GET    | `/api/scans/:id/source`   | `?path=` → extracted file as text (secret lines redacted); `400` bad path, `413` > 2 MB, `415` binary                                                      |
+| GET    | `/api/scans/:id/file`     | `?path=` → one extracted file as JSON (secret lines redacted, path-confined, `MAX_VIEW_FILE_KB` cap); see [Source file endpoint](#source-file-endpoint)    |
 
 `DELETE /api/projects/:id` also removes the project's stored files. `POST /api/auth/*` and
 uploads are rate-limited and answer `429` when over the limit (see
@@ -840,6 +896,7 @@ see `.env.example`.
 | `MAX_UPLOAD_MB` / `UPLOAD_TIMEOUT_MS`                                | 512 / 600000                            | Upload size cap / upload time limit ([details](#limits--configuration)) |
 | `MAX_EXTRACTED_FILES` / `MAX_EXTRACTED_MB` / `MAX_COMPRESSION_RATIO` | 100,000 / 2048 MB / 200                 | Zip-bomb limits ([details](#limits--configuration))                     |
 | `ANALYSIS_MAX_FILE_BYTES`                                            | 1 MB                                    | Larger files are profiled but not parsed                                |
+| `MAX_VIEW_FILE_KB`                                                   | 2048                                    | File viewer cap; larger files return their head with `truncated: true`  |
 | `SCAN_TIMEOUT_MS`                                                    | 600000                                  | Wall-clock limit per scan job                                           |
 | `SCAN_MAX_HEAP_MB`                                                   | 1024                                    | Heap cap for the analysis thread                                        |
 | `OFFLINE`                                                            | `false`                                 | `true` disables every outbound call (overrides the next two)            |

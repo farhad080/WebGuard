@@ -2,44 +2,92 @@ import Editor, { type OnMount } from '@monaco-editor/react';
 import { useEffect, useRef } from 'react';
 import { languageForPath } from '../../lib/findings';
 import { useColorMode } from '../../lib/theme';
+import { clampRange, type FileMark } from './scan-file';
 import './monaco-setup';
 
 type MonacoEditor = Parameters<OnMount>[0];
+
+const NO_MARKS: readonly FileMark[] = [];
 
 export interface CodeViewProps {
   path: string;
   code: string;
   lineStart: number;
   lineEnd: number;
+  /** Other findings in the same file: marked in the gutter and the overview ruler. */
+  marks?: readonly FileMark[];
+  /** Overrides the accessible name of the editor. */
+  ariaLabel?: string;
 }
 
-/** Read-only Monaco view of one file with the finding's lines highlighted and revealed. */
-export default function MonacoCodeView({ path, code, lineStart, lineEnd }: CodeViewProps) {
+/**
+ * Read-only Monaco view of one file: the finding's lines are highlighted and scrolled into
+ * view; other findings in the file get a gutter marker. Shared by the finding detail page and
+ * the findings file viewer.
+ */
+export default function MonacoCodeView({
+  path,
+  code,
+  lineStart,
+  lineEnd,
+  marks = NO_MARKS,
+  ariaLabel,
+}: CodeViewProps) {
   const mode = useColorMode();
   const editorRef = useRef<MonacoEditor | null>(null);
   const decorations = useRef<{ clear: () => void } | null>(null);
 
   const highlight = (editor: MonacoEditor) => {
     decorations.current?.clear();
+    const lineCount = editor.getModel()?.getLineCount() ?? 0;
+    const whole = (r: { lineStart: number; lineEnd: number }) => ({
+      startLineNumber: r.lineStart,
+      startColumn: 1,
+      endLineNumber: r.lineEnd,
+      endColumn: 1,
+    });
+    const others = marks.flatMap((m) => {
+      const r = clampRange(m, lineCount);
+      return r
+        ? [
+            {
+              range: whole(r),
+              options: {
+                isWholeLine: true,
+                className: 'other-finding-line',
+                linesDecorationsClassName: `other-finding-gutter sev-${m.severity}`,
+                hoverMessage: { value: `Other finding: ${m.label}` },
+                overviewRuler: { color: '#c98500', position: 1 },
+              },
+            },
+          ]
+        : [];
+    });
+    const active = clampRange({ lineStart, lineEnd }, lineCount);
     decorations.current = editor.createDecorationsCollection([
-      {
-        range: { startLineNumber: lineStart, startColumn: 1, endLineNumber: lineEnd, endColumn: 1 },
-        options: {
-          isWholeLine: true,
-          className: 'vuln-line',
-          linesDecorationsClassName: 'vuln-gutter',
-          hoverMessage: { value: 'Vulnerable code (this finding)' },
-          overviewRuler: { color: '#d03b3b', position: 4 },
-        },
-      },
+      ...others,
+      ...(active
+        ? [
+            {
+              range: whole(active),
+              options: {
+                isWholeLine: true,
+                className: 'vuln-line',
+                linesDecorationsClassName: 'vuln-gutter',
+                hoverMessage: { value: 'Vulnerable code (this finding)' },
+                overviewRuler: { color: '#d03b3b', position: 4 },
+              },
+            },
+          ]
+        : []),
     ]);
-    editor.revealLinesInCenter(lineStart, lineEnd);
+    if (active) editor.revealLinesInCenter(active.lineStart, active.lineEnd);
   };
 
   useEffect(() => {
     if (editorRef.current) highlight(editorRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lineStart, lineEnd, code]);
+  }, [lineStart, lineEnd, code, marks]);
 
   return (
     <Editor
@@ -64,7 +112,7 @@ export default function MonacoCodeView({ path, code, lineStart, lineEnd }: CodeV
         lineNumbersMinChars: 4,
         automaticLayout: true,
         contextmenu: false,
-        ariaLabel: `Source of ${path}, lines ${lineStart} to ${lineEnd} highlighted`,
+        ariaLabel: ariaLabel ?? `Source of ${path}, lines ${lineStart} to ${lineEnd} highlighted`,
       }}
     />
   );

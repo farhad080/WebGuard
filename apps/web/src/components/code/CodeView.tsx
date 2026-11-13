@@ -1,11 +1,11 @@
-import { useQuery } from '@tanstack/react-query';
 import { lazy, Suspense } from 'react';
-import { api } from '../../api/endpoints';
-import { ErrorState, Loading } from '../States';
+import { Loading } from '../States';
+import { BinaryFile, FileUnavailable, TruncatedNotice } from './FileStatus';
+import { useScanFile } from './scan-file';
 
 const MonacoCodeView = lazy(() => import('./MonacoCodeView'));
 
-/** Fetches the (secret-redacted) file from the API and shows it in Monaco. */
+/** Finding detail code view: the file (shared fetch, secret-redacted) in Monaco. */
 export function CodeView({
   scanId,
   path,
@@ -19,12 +19,12 @@ export function CodeView({
   lineEnd: number;
   fallbackSnippet: string;
 }) {
-  const source = useQuery({
-    queryKey: ['source', scanId, path],
-    queryFn: () => api.getSource(scanId, path),
-    staleTime: Infinity,
-    retry: false,
-  });
+  const file = useScanFile(scanId, path);
+  const snippet = (
+    <pre className="snippet">
+      <code>{fallbackSnippet}</code>
+    </pre>
+  );
 
   return (
     <div className="code-view">
@@ -34,29 +34,30 @@ export function CodeView({
           · lines {lineStart}–{lineEnd}
         </span>
       </div>
-      {source.isPending ? (
+      {file.isPending ? (
         <Loading label="Loading source…" />
-      ) : source.isError ? (
+      ) : file.isError ? (
         <>
-          <ErrorState
-            title="Full file unavailable — showing the stored snippet"
-            error={source.error}
-          />
-          <pre className="snippet">
-            <code>{fallbackSnippet}</code>
-          </pre>
+          <FileUnavailable error={file.error} path={path} />
+          <p className="muted small code-view-fallback">Stored snippet:</p>
+          {snippet}
         </>
+      ) : file.data.binary ? (
+        <BinaryFile file={file.data} />
       ) : (
-        <div className="code-view-editor">
-          <Suspense fallback={<Loading label="Loading editor…" />}>
-            <MonacoCodeView
-              path={path}
-              code={source.data}
-              lineStart={lineStart}
-              lineEnd={lineEnd}
-            />
-          </Suspense>
-        </div>
+        <>
+          <TruncatedNotice file={file.data} range={{ lineStart, lineEnd }} />
+          <div className="code-view-editor">
+            <Suspense fallback={<Loading label="Loading editor…" />}>
+              <MonacoCodeView
+                path={path}
+                code={file.data.content}
+                lineStart={lineStart}
+                lineEnd={lineEnd}
+              />
+            </Suspense>
+          </div>
+        </>
       )}
     </div>
   );
